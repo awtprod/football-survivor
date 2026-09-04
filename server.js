@@ -15,7 +15,7 @@ const vapidFile = path.join(DATA_DIR, 'vapid.json');
 let vapid;
 if (existsSync(vapidFile)) vapid = JSON.parse(readFileSync(vapidFile, 'utf8'));
 else { vapid = webpush.generateVAPIDKeys(); writeFileSync(vapidFile, JSON.stringify(vapid)); }
-webpush.setVapidDetails('mailto:survivor@localhost', vapid.publicKey, vapid.privateKey);
+webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'https://openclaw-server.tailbd9828.ts.net:8446', vapid.publicKey, vapid.privateKey);
 
 // --- Analysis (cached in-memory, refreshed on demand) ---
 let analysisCache = { at: 0, key: '', value: null };
