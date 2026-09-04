@@ -15,22 +15,48 @@ export function isAvailable(entry, team, week) {
 /** Number of rivals (pass alive rivals, excluding yourself) who could still take `team` in `week`. */
 export function availableCount(rivals, team, week) { let n = 0; for (const r of rivals) if (isAvailable(r, team, week)) n++; return n; }
 
+/** Owner of a workbook entry: the name with a trailing "#n" removed ("Ryan, Brendan #2" -> "ryan, brendan"). */
+export function ownerOf(name) { return String(name ?? '').replace(/\s*#\s*\d+\s*$/, '').trim().toLowerCase(); }
+
+/**
+ * Same-owner diversification (mean-field). For every owner with 2+ entries in `perEntry`, each entry's chance of
+ * taking a team is scaled by 1 - (1 - lambda) * P(another of that owner's entries takes it), then renormalised so the
+ * entry still sums to 1. lambda = 1 returns the independent projection untouched; lambda -> 0 stops doubling up.
+ * `owners[i]` is the owner key of perEntry[i] (null = unknown, never grouped).
+ */
+export function diversify(perEntry, owners, lambda = 1) {
+  if (!(lambda >= 0 && lambda < 1)) return perEntry;
+  const groups = {}; owners.forEach((o, i) => { if (o) (groups[o] ??= []).push(i); });
+  const out = perEntry.slice();
+  for (const idx of Object.values(groups)) {
+    if (idx.length < 2) continue;
+    for (const i of idx) {
+      const p = perEntry[i]; const q = {}; let z = 0;
+      for (const t in p) { let none = 1; for (const j of idx) if (j !== i) none *= 1 - (perEntry[j][t] ?? 0); q[t] = p[t] * (1 - (1 - lambda) * (1 - none)); z += q[t]; }
+      if (z > 0) { for (const t in q) q[t] /= z; out[i] = q; }
+    }
+  }
+  return out;
+}
+
 /**
  * Per-rival pick probabilities: prior(t) = consensus[t]^factor over the teams the rival still holds, renormalised.
  * `factorOf(rival)` returns an optional per-rival multiplier on chalkFactor (behavioural tuning).
+ * `lambda` < 1 applies same-owner diversification (see diversify) using each rival's `owner` key.
  * Returns { count: {team: expected picks}, pct: {team: share of rivals}, perRival: [{team: p}], n }.
  */
-export function projectPicks({ rivals, teams, consensus = {}, week, chalkFactor = 1, factorOf = null }) {
-  const count = Object.fromEntries(teams.map((t) => [t, 0])); const perRival = [];
+export function projectPicks({ rivals, teams, consensus = {}, week, chalkFactor = 1, factorOf = null, lambda = 1 }) {
+  const count = Object.fromEntries(teams.map((t) => [t, 0])); let perRival = [];
   for (const r of rivals) {
     const f = chalkFactor * (factorOf?.(r) ?? 1);
     const avail = teams.filter((t) => isAvailable(r, t, week));
     const p = {}; let z = 0; const w = {};
     for (const t of avail) { w[t] = Math.pow(Math.max(consensus[t] ?? FLOOR, FLOOR), f); z += w[t]; }
     if (avail.length) for (const t of avail) p[t] = z > 0 && Number.isFinite(z) ? w[t] / z : 1 / avail.length;
-    for (const t in p) count[t] += p[t];
     perRival.push(p);
   }
+  perRival = diversify(perRival, rivals.map((r) => r.owner ?? null), lambda);
+  for (const p of perRival) for (const t in p) count[t] += p[t];
   const n = rivals.length;
   return { count, pct: Object.fromEntries(teams.map((t) => [t, n ? count[t] / n : 0])), perRival, n };
 }
@@ -147,4 +173,110 @@ export function parseGrid(text, toCode) {
   }
   if (!rows.length) throw new Error('no team rows recognised');
   return { data, rows, unknown, skipped };
+}
+
+/* ---------- Multi-entry portfolio: joint EV over enumerated game outcomes ---------- */
+
+/**
+ * Rank assignments of one team per own entry by joint pool equity.
+ *   entries:   [{ id, used: [codes] }]           my alive entries (availability per entry from `used`)
+ *   teams:     [codes]                            this week's candidate teams
+ *   winProb:   { team: p }, oppOf: { team: opp }  this week's games (opp may be absent from `teams`)
+ *   rivalPick: { team: expected # of alive rivals on that team } (projectPicks().count)
+ *   topN:      per-entry candidate cap (by single-entry EV) before enumerating combinations
+ *   maxGames:  cap on distinct games enumerated (2^k outcomes); further teams are folded into "other"
+ *   mustDiffer: forbid the same team on two of my entries
+ *   maxCombos: hard cap on assignments scored
+ * For each outcome o of the relevant games: mySurv = my entries whose team won, rivalSurv = rivals whose projected
+ * team won (plus rivals on games outside the enumerated set at their own win rate), equity = mySurv / (mySurv + rivalSurv).
+ * Returns { ranked: [{ teams, jointEV, wipeout, allSurvive, expSurvivors, distinct }], games, hedge, best, ... }.
+ */
+export function portfolio({ entries, teams, winProb, oppOf = {}, rivalPick = {}, topN = 6, maxGames = 12, mustDiffer = false, maxCombos = 20000 }) {
+  const m = entries.length; if (!m) return { ranked: [], games: [], m: 0 };
+  const isTeam = new Set(teams);
+  // Single-entry EV (existing survivorEV) orders the candidates; rival shares come from expected counts.
+  const nR = Object.values(rivalPick).reduce((a, b) => a + b, 0);
+  const pct = Object.fromEntries(teams.map((t) => [t, nR ? (rivalPick[t] ?? 0) / nR : 0]));
+  const single = survivorEV({ teams, pct, winProb, oppOf }).ev;
+  const cands = entries.map((e) => teams.filter((t) => !(e.used || []).includes(t) && winProb[t] != null).sort((a, b) => single[b] - single[a]).slice(0, topN));
+  if (cands.some((c) => !c.length)) return { ranked: [], games: [], m, empty: true };
+  // Relevant games: my candidates' games first, then the biggest rival chalk, capped at maxGames.
+  const gameKey = (t) => [t, oppOf[t]].filter(Boolean).sort().join('|');
+  const order = [...new Set([...cands.flat(), ...teams.slice().sort((a, b) => (rivalPick[b] ?? 0) - (rivalPick[a] ?? 0))])];
+  const games = []; const gameOf = {};
+  for (const t of order) { const k = gameKey(t); if (gameOf[k] != null) continue; if (games.length >= maxGames) break; gameOf[k] = games.length; games.push({ key: k, team: t, opp: oppOf[t] ?? null, p: winProb[t] }); }
+  // Enumerate outcomes: bit i set = games[i].team won. Rival survivors from un-enumerated games survive at their own rate.
+  let rivalOther = 0;
+  for (const t of teams) { const gi = gameOf[gameKey(t)]; if (gi == null) rivalOther += (rivalPick[t] ?? 0) * winProb[t]; }
+  const k = games.length; const nOut = 1 << k;
+  const probO = new Float64Array(nOut), rivalO = new Float64Array(nOut);
+  for (let o = 0; o < nOut; o++) {
+    let p = 1, s = rivalOther;
+    for (let i = 0; i < k; i++) {
+      const g = games[i]; const won = (o >> i) & 1;
+      p *= won ? g.p : 1 - g.p;
+      if (won) s += rivalPick[g.team] ?? 0; else if (g.opp && isTeam.has(g.opp)) s += rivalPick[g.opp] ?? 0;
+    }
+    probO[o] = p; rivalO[o] = s;
+  }
+  // Which outcome bit means "team t won" (0 = own team bit set, 1 = opponent bit clear).
+  const bitOf = {}; for (const t of teams) { const gi = gameOf[gameKey(t)]; if (gi != null) bitOf[t] = { i: gi, own: games[gi].team === t }; }
+  const wins = (t, o) => { const b = bitOf[t]; return b ? (((o >> b.i) & 1) === (b.own ? 1 : 0)) : null; };
+  const score = (A) => {
+    let ev = 0, wipe = 0, all = 0, exp = 0;
+    for (let o = 0; o < nOut; o++) {
+      let my = 0; for (const t of A) if (wins(t, o)) my++;
+      const p = probO[o]; const S = my + rivalO[o];
+      ev += p * (S > 0 ? my / S : 0); if (!my) wipe += p; if (my === m) all += p; exp += p * my;
+    }
+    return { jointEV: ev, wipeout: wipe, allSurvive: all, expSurvivors: exp };
+  };
+  const ranked = []; let truncated = false;
+  const rec = (i, A) => {
+    if (ranked.length >= maxCombos) { truncated = true; return; }
+    if (i === m) { ranked.push({ teams: A.slice(), ...score(A), distinct: new Set(A).size }); return; }
+    for (const t of cands[i]) { if (mustDiffer && A.includes(t)) continue; A.push(t); rec(i + 1, A); A.pop(); }
+  };
+  rec(0, []);
+  // Collapse permutations with identical scores (entries with the same availability are interchangeable there).
+  const seenKey = new Map();
+  const uniq = ranked.filter((r) => { const k = r.teams.slice().sort().join('|'); const prev = seenKey.get(k); if (prev && Math.abs(prev.jointEV - r.jointEV) < 1e-12 && Math.abs(prev.wipeout - r.wipeout) < 1e-12) { prev.mirrors = (prev.mirrors || 0) + 1; return false; } if (!prev) seenKey.set(k, r); return true; });
+  ranked.length = 0; ranked.push(...uniq);
+  ranked.sort((a, b) => b.jointEV - a.jointEV);
+  const best = ranked[0] || null;
+  const hedge = ranked.filter((r) => r.distinct >= 2).sort((a, b) => b.jointEV - a.jointEV)[0] || null;
+  const safest = ranked.slice().sort((a, b) => a.wipeout - b.wipeout || b.jointEV - a.jointEV)[0] || null;
+  return { ranked, games, m, best, hedge, safest, truncated, single, cands };
+}
+
+/**
+ * Season paths for several own entries that avoid converging on one team in the same week.
+ * planFn(usedTeams, fromWeek) returns { plan: [{ week, team, prob }] } (model.planSeason). Entries are planned
+ * greedily in order; each later entry sees the earlier entries' planned team for a week as taken in that week
+ * only, so both may still hold KC but not spend it the same week. Returns { paths, collisions: [{ week, teams }] }.
+ */
+export function planPortfolio(entries, projection, week, planFn, toWeek = 18) {
+  const paths = []; const takenBy = {}; // week -> Set(team)
+  for (const e of entries) {
+    // Mask this week's already-claimed teams by dropping them from the projection view for that week only.
+    const proj = {};
+    for (const [t, arr] of Object.entries(projection)) proj[t] = arr.filter((x) => !(takenBy[x.week]?.has(t)));
+    const { plan, survival } = planFn(proj, e.used || [], week, toWeek);
+    for (const p of plan) if (p.team) (takenBy[p.week] ??= new Set()).add(p.team);
+    paths.push({ id: e.id, plan, survival });
+  }
+  // Collisions = weeks where 2+ entries' unconstrained plans want the same team AND the de-conflicted path gives one
+  // of them a materially worse game (drop >= minCost in win prob). Identical entries want the same team every week,
+  // so only the weeks where that actually hurts are flagged.
+  const collisions = []; const minCost = 0.03;
+  if (entries.length > 1) {
+    const byWeek = {};
+    entries.forEach((e, i) => { const { plan } = planFn(projection, e.used || [], week, toWeek); for (const p of plan) if (p.team) (byWeek[p.week] ??= []).push({ team: p.team, prob: p.prob, i }); });
+    for (const [w, ps] of Object.entries(byWeek)) {
+      const dup = [...new Set(ps.map((x) => x.team).filter((t, i, a) => a.indexOf(t) !== i))]; if (!dup.length) continue;
+      const cost = Math.max(...ps.map((x) => x.prob - (paths[x.i].plan.find((q) => q.week === +w)?.prob ?? 0)));
+      if (cost >= minCost) collisions.push({ week: +w, teams: dup, cost });
+    }
+  }
+  return { paths, collisions };
 }

@@ -21,7 +21,7 @@ await p.click('#v-pool th[data-s="pct"]'); await new Promise(r => setTimeout(r, 
 await p.type('#sgText', 'KC, 0.66, 0.18\nBUF, -240, 9%'); await p.click('#sgPreview'); await p.waitForFunction(() => document.querySelector('#sgOut')?.innerText.includes('teams parsed'));
 console.log('preview', await p.$eval('#sgOut', (e) => e.innerText.replace(/\n/g, ' | ')));
 await p.screenshot({ path: '/tmp/pool-full.png', fullPage: true });
-await p.click('nav button[data-v="settings"]'); await new Promise(r => setTimeout(r, 200)); console.log('settings myEntry', await p.$eval('#myEntry', (e) => e.value), 'datalist', await p.$$eval('#entryNames option', (o) => o.length));
+await p.click('nav button[data-v="settings"]'); await new Promise(r => setTimeout(r, 200)); console.log('settings myEntries', await p.$eval('#myEntries', (e) => e.value), 'datalist', await p.$$eval('#entryNames option', (o) => o.length));
 await p.screenshot({ path: '/tmp/pool-settings.png' });
 await p.setViewport({ width: 1280, height: 900 }); await p.click('nav button[data-v="pool"]'); await new Promise(r => setTimeout(r, 300)); await p.screenshot({ path: '/tmp/pool-desktop.png' });
 console.log('ERRORS', errs);
