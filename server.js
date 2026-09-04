@@ -29,7 +29,7 @@ async function analyze(season, week, force = false) {
   ]);
   const elo = model.computeElo(games);
   const projection = model.projectSeason({ nvGames: games, elo, season });
-  const picks = store.get().picks[season] || {};
+  const picks = store.picksFor(season, 0);
   const usedBefore = Object.entries(picks).filter(([w]) => +w !== week).map(([, p]) => p.team);
   const rows = model.rateWeek({ espnGames, nvGames: games, elo, injuries, season, week, used: usedBefore, remainingWeeks: projection });
   // Pool: other entries' pick history -> alive count, forecast crowd, leverage. Nudges the survivor score.
@@ -49,13 +49,40 @@ async function analyze(season, week, force = false) {
   }
   const usedThrough = Object.entries(picks).filter(([w]) => +w < week).map(([, p]) => p.team);
   const plan = model.planSeason(projection, usedThrough, week);
+  // My entries (one by default; more when settings.myEntries names several workbook rows): availability per entry,
+  // one season path each that avoids spending the same team in the same week, and the joint-EV portfolio for this week.
+  const mine = myEntries(season, week, poolDoc, projection);
+  const portfolio = mine.length > 1 && poolInfo?.projected ? crowd.portfolio({ entries: mine.filter((e) => e.alive), teams: rows.filter((r) => !r.done).map((r) => r.team), winProb: poolInfo.projected.winProb, oppOf: poolInfo.projected.oppOf, rivalPick: poolInfo.projected.count, mustDiffer: !!store.get().settings.mustDiffer }) : null;
+  const paths = mine.length > 1 ? crowd.planPortfolio(mine.filter((e) => e.alive), projection, week, model.planSeason) : null;
   // Team trend series (Elo over the last 2 seasons)
   const trends = {};
   for (const t of Object.keys(teams)) trends[t] = (elo.history[t] || []).filter((h) => h.season >= season - 1).map((h) => ({ s: h.season, w: h.week, e: Math.round(h.elo) }));
-  const value = { season, week, rows, plan, pool: poolInfo, sg, projection, trends, calibration: model.calibration(games), teams, ratings: elo.ratings, generatedAt: new Date().toISOString(),
+  const value = { season, week, rows, plan, myEntries: mine, portfolio, paths, pool: poolInfo, sg, projection, trends, calibration: model.calibration(games), teams, ratings: elo.ratings, generatedAt: new Date().toISOString(),
     sources: ['ESPN scoreboard (DraftKings lines, records, status)', 'ESPN injuries', 'nflverse games.csv (1999-present results, closing lines, rest days)'] };
   analysisCache = { at: Date.now(), key, value };
   return value;
+}
+
+/** Names (lower-cased) of all my entries, so they never count as rivals. */
+function myNames(settings) { return new Set([settings.myEntry, ...(settings.myEntries || [])].map((n) => (n || '').trim().toLowerCase()).filter(Boolean)); }
+
+/**
+ * My entries for the week: index i pairs settings.myEntries[i] (a workbook row, optional) with entryPicks[season][i].
+ * used = teams burned before `week` in either source; alive = no recorded loss in the app and not eliminated on the sheet.
+ */
+function myEntries(season, week, poolDoc, projection) {
+  const settings = store.get().settings;
+  const names = settings.myEntries?.length ? settings.myEntries : [settings.myEntry || ''];
+  const sheet = poolDoc?.season === season && poolDoc.entries?.length ? model.aliveEntries(poolDoc.entries, projection, week) : [];
+  return names.map((name, i) => {
+    const row = name ? sheet.find((e) => e.name.trim().toLowerCase() === name.trim().toLowerCase()) : null;
+    const app = store.picksFor(season, i);
+    const used = new Set(Object.entries(app).filter(([w]) => +w < week).map(([, p]) => p.team));
+    if (row) for (const [w, t] of Object.entries(row.picks)) if (+w < week) used.add(t);
+    const lost = Object.entries(app).find(([w, p]) => +w < week && p.result === 'loss');
+    const alive = !lost && (row ? row.alive : true);
+    return { id: i, name: name || (i ? `Entry ${i + 1}` : 'Me'), used: [...used], alive, out: lost ? { week: +lost[0], team: lost[1].team } : row?.out || null, onSheet: !!row, picks: app };
+  });
 }
 
 /**
@@ -66,8 +93,8 @@ async function analyze(season, week, force = false) {
 function projectPool({ poolDoc, projection, week, rows, sg, k }) {
   const st = store.get(); const settings = st.settings;
   const live = model.aliveEntries(poolDoc.entries, projection, week).filter((e) => e.alive);
-  const mine = (settings.myEntry || '').trim().toLowerCase();
-  const rivals = live.filter((e) => e.name.trim().toLowerCase() !== mine);
+  const mine = myNames(settings);
+  const rivals = live.filter((e) => !mine.has(e.name.trim().toLowerCase())).map((e) => ({ ...e, owner: crowd.ownerOf(e.name) }));
   const teams = rows.map((r) => r.team); const winProb = {}, oppOf = {};
   for (const r of rows) { winProb[r.team] = sg?.data?.[r.team]?.winProb ?? r.prob; oppOf[r.team] = r.opp; }
   let consensus;
@@ -76,7 +103,8 @@ function projectPool({ poolDoc, projection, week, rows, sg, k }) {
   const probs = {}; for (const [t, arr] of Object.entries(projection)) for (const x of arr) (probs[x.week] ??= {})[t] = x.prob;
   const chalk = settings.behaviour ? crowd.chalkRates(poolDoc.entries, probs, week) : null;
   const factorOf = (r) => settings.entrantChalk?.[r.name] ?? chalk?.[r.name]?.mult ?? 1;
-  const pp = crowd.projectPicks({ rivals, teams, consensus, week, chalkFactor: settings.chalkFactor ?? 1, factorOf });
+  const lambda = settings.lambda ?? 1;
+  const pp = crowd.projectPicks({ rivals, teams, consensus, week, chalkFactor: settings.chalkFactor ?? 1, factorOf, lambda });
   const { ev, surv, survIf } = crowd.survivorEV({ teams, pct: pp.pct, winProb, oppOf });
   // Leverage (normalised around 1, as before) now driven by the pool-specific shares: base survival ÷ survival if T wins.
   const base = teams.reduce((a, t) => a + survIf[t] * winProb[t], 0) / Math.max(1e-9, teams.reduce((a, t) => a + winProb[t], 0));
@@ -88,22 +116,23 @@ function projectPool({ poolDoc, projection, week, rows, sg, k }) {
   const elite = settings.elite?.length ? settings.elite : meanFut.slice(0, 8).map(([t]) => t);
   const inventory = crowd.inventory(rivals, elite, week);
   // Rival-by-rival used lists so the client can recompute the projection live when the chalk slider moves.
-  const rivalUsed = rivals.map((r) => ({ name: r.name, used: Object.entries(r.picks).filter(([w]) => +w < week).map(([, t]) => t), f: factorOf(r) }));
-  return { pct: pp.pct, count: pp.count, ev, surv, survIf, leverage, avail, rivals: rivals.length, consensus, winProb, oppOf, rivalUsed, lookahead: la, elite, inventory, chalk, myEntry: settings.myEntry || null, chalkFactor: settings.chalkFactor ?? 1 };
+  const rivalUsed = rivals.map((r) => ({ name: r.name, owner: r.owner, used: Object.entries(r.picks).filter(([w]) => +w < week).map(([, t]) => t), f: factorOf(r) }));
+  const multiOwners = new Set(rivals.map((r) => r.owner)).size;
+  return { pct: pp.pct, count: pp.count, ev, surv, survIf, leverage, avail, rivals: rivals.length, owners: multiOwners, consensus, winProb, oppOf, rivalUsed, lookahead: la, elite, inventory, chalk, myEntry: settings.myEntry || null, chalkFactor: settings.chalkFactor ?? 1, lambda, mustDiffer: !!settings.mustDiffer };
 }
 
 // --- Results grading: mark picks won/lost once games are final ---
 async function gradePicks() {
   const { season } = await nfl.currentWeek();
-  const picks = store.get().picks[season] || {};
-  for (const [w, p] of Object.entries(picks)) {
+  const byEntry = store.get().entryPicks[season] || {};
+  for (const [entry, picks] of Object.entries(byEntry)) for (const [w, p] of Object.entries(picks)) {
     if (p.result) continue;
     const games = await nfl.loadWeek(season, +w).catch(() => []);
     const g = games.find((x) => x.home === p.team || x.away === p.team);
     if (!g || g.status !== 'post') continue;
     const won = g.home === p.team ? g.homeWinner : g.awayWinner;
     const tie = g.homeScore === g.awayScore;
-    store.save((s) => { s.picks[season][w].result = tie ? 'tie' : won ? 'win' : 'loss'; s.picks[season][w].score = `${g.awayScore}-${g.homeScore}`; });
+    store.save((s) => { const q = s.entryPicks[season][entry][w]; q.result = tie ? 'tie' : won ? 'win' : 'loss'; q.score = `${g.awayScore}-${g.homeScore}`; });
   }
 }
 
@@ -135,7 +164,8 @@ async function reminderTick() {
   try {
     const { season, week } = await nfl.currentWeek();
     const st = store.get(); const settings = st.settings;
-    const pick = st.picks[season]?.[week];
+    const nEntries = Math.max(1, st.settings.myEntries?.length || 0);
+    const missing = []; for (let i = 0; i < nEntries; i++) if (!store.picksFor(season, i)[week]) missing.push(i);
     const deadline = await deadlineFor(season, week, settings);
     const now = Date.now();
     for (const lead of settings.leadHours) {
@@ -143,11 +173,11 @@ async function reminderTick() {
       const key = `${season}-${week}-${lead}`;
       if (now >= fireAt && now < fireAt + 2 * 3600e3 && !st.reminded[key]) {
         store.save((s) => { s.reminded[key] = now; });
-        if (pick) continue; // already picked -> no nag
+        if (!missing.length) continue; // every entry picked -> no nag
         const a = await analyze(season, week).catch(() => null);
         const top = a?.rows.filter((r) => !r.used)[0];
         const when = lead === 0 ? 'now' : `in ${lead}h`;
-        await sendPush({ title: `Survivor: Week ${week} pick due ${when}`, body: top ? `Top suggestion: ${top.team} vs ${top.opp} (${Math.round(top.prob * 100)}%)` : 'Open the app to lock your pick.', url: '/', tag: `survivor-w${week}` });
+        await sendPush({ title: `Survivor: Week ${week} pick${missing.length > 1 ? `s (${missing.length} entries)` : ''} due ${when}`, body: top ? `Top suggestion: ${top.team} vs ${top.opp} (${Math.round(top.prob * 100)}%)` : 'Open the app to lock your pick.', url: '/', tag: `survivor-w${week}` });
         console.log(`[reminder] sent week ${week} lead ${lead}h`);
       }
     }
@@ -172,18 +202,19 @@ http.createServer(async (req, res) => {
       const a = await analyze(season, week, url.searchParams.has('refresh'));
       const st = store.get();
       const deadline = await deadlineFor(season, week, st.settings).catch(() => null);
-      return json(res, 200, { ...a, current: cur, picks: st.picks[season] || {}, settings: st.settings, deadline, vapidPublicKey: vapid.publicKey, pushSubscribed: st.subscriptions.length });
+      return json(res, 200, { ...a, current: cur, picks: store.picksFor(season, 0), entryPicks: st.entryPicks[season] || {}, settings: st.settings, deadline, vapidPublicKey: vapid.publicKey, pushSubscribed: st.subscriptions.length });
     }
     if (url.pathname === '/api/pick' && req.method === 'POST') {
-      const { season, week, team, note } = await body(req);
+      const b = await body(req); const { season, week, team, note } = b; const entry = b.entry ?? 0;
       if (!Number.isInteger(season) || !Number.isInteger(week) || week < 1 || week > 18) return json(res, 400, { error: 'bad week' });
       if (team != null && !VALID_TEAM.test(team)) return json(res, 400, { error: 'bad team' });
-      const picks = store.get().picks[season] || {};
+      if (!Number.isInteger(entry) || entry < 0 || entry >= Math.max(1, store.get().settings.myEntries?.length || 0)) return json(res, 400, { error: 'bad entry' });
+      const picks = store.picksFor(season, entry);
       const dup = Object.entries(picks).find(([w, p]) => +w !== week && p.team === team);
       if (team && dup) return json(res, 409, { error: `${team} already used in week ${dup[0]}` });
-      store.save((s) => { s.picks[season] ??= {}; if (team) s.picks[season][week] = { team, note: String(note || '').slice(0, 300), at: new Date().toISOString() }; else delete s.picks[season][week]; });
+      store.save((s) => { s.entryPicks[season] ??= {}; s.entryPicks[season][entry] ??= {}; if (team) s.entryPicks[season][entry][week] = { team, note: String(note || '').slice(0, 300), at: new Date().toISOString() }; else delete s.entryPicks[season][entry][week]; });
       analysisCache.at = 0;
-      return json(res, 200, { picks: store.get().picks[season] });
+      return json(res, 200, { picks: store.picksFor(season, 0), entryPicks: store.get().entryPicks[season] });
     }
     if (url.pathname === '/api/subscribe' && req.method === 'POST') {
       const sub = await body(req);
@@ -199,6 +230,9 @@ http.createServer(async (req, res) => {
         if (typeof b.reminderTz === 'string' && b.reminderTz.length < 64) { try { new Date().toLocaleString('en-US', { timeZone: b.reminderTz }); s.settings.reminderTz = b.reminderTz; } catch {} }
         if (typeof b.chalkFactor === 'number' && b.chalkFactor >= 0.25 && b.chalkFactor <= 3) s.settings.chalkFactor = Math.round(b.chalkFactor * 100) / 100;
         if (typeof b.myEntry === 'string') s.settings.myEntry = b.myEntry.slice(0, 80);
+        if (Array.isArray(b.myEntries) && b.myEntries.length <= 8 && b.myEntries.every((n) => typeof n === 'string')) { s.settings.myEntries = b.myEntries.map((n) => n.trim().slice(0, 80)); if (s.settings.myEntries.length) s.settings.myEntry = s.settings.myEntries[0]; }
+        if (typeof b.lambda === 'number' && b.lambda >= 0 && b.lambda <= 1) s.settings.lambda = Math.round(b.lambda * 100) / 100;
+        if (typeof b.mustDiffer === 'boolean') s.settings.mustDiffer = b.mustDiffer;
         if (typeof b.behaviour === 'boolean') s.settings.behaviour = b.behaviour;
         if (Array.isArray(b.elite) && b.elite.length <= 16 && b.elite.every((t) => VALID_TEAM.test(t))) s.settings.elite = b.elite;
         if (b.entrantChalk && typeof b.entrantChalk === 'object' && !Array.isArray(b.entrantChalk)) {

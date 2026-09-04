@@ -35,12 +35,19 @@ All of this is an estimate of other people's behaviour and is labelled as such i
 - **Lookahead**: expected number of rivals still holding each elite team (tagged in Settings, else top 8 by remaining projected win%) entering each future week, thinning rivals by projected picks and losses. Weeks where most elite teams are burned are flagged as carnage candidates.
 - **Rival inventory**: alive rivals by elite teams still held; zero held = blocked.
 
+## Multiple entries (portfolio)
+Settings → My entries, one workbook name per line (up to 8; a blank line is an entry that is not on the sheet). Entry 1 is the default and keeps the old single-entry behaviour. Picks are stored per entry (`entryPicks[season][entry][week]`; the old `picks` map migrates into entry 0 on first load) and graded per entry; reminders fire while any entry has no pick. None of my entries ever counts as a rival.
+- **Pick / Season tabs** get an entry chip row. Availability, the win-probability grid and the season path are per entry. Paths are planned in entry order so two entries never spend the same team in the same week; weeks where that de-confliction costs an entry 3+ points of win probability are flagged as collision weeks.
+- **Pool tab → Portfolio** (`crowd.portfolio`): every assignment of one team per alive entry (each entry limited to its top 6 by single-entry EV) is scored over all 2^k outcomes of the k ≤ 12 games spanned by those candidates plus the biggest rival chalk. Joint EV = Σ P(outcome) × (my survivors ÷ all survivors), with my own entries in the denominator, so stacking one team leaks equity. Also shown: P(wipeout), P(all survive), E[survivors], distinct teams. Objective chips reorder by max joint EV, min wipeout, or a balance; the highlighted hedge row is the best split across 2+ teams. "Must take different teams" (also a saved setting) drops duplicate assignments.
+- **Same-owner diversification λ** (Pool tab slider, saved with the chalk factor): rivals are grouped by owner (workbook name minus a trailing `#n`). With λ < 1 each entry's chance of a team is scaled by `1 − (1 − λ) × P(another of the owner's entries takes it)` then renormalised, so an owner with three entries is less likely to put them all on the same favourite. λ = 1 is off and reproduces the independent projection exactly.
+
 ## Reminders
 Server checks every 5 minutes. If the current week has no pick, it sends web-push at 24h, 3h, and 0h before the deadline (Saturday 12:00 America/New_York by default; configurable in Settings). Picks are auto-graded once games go final.
 
 ## Test
 ```
-node --test test/crowd-test.mjs   # projection, EV, parser, lookahead unit tests
+node --test test/crowd-test.mjs test/portfolio-test.mjs   # projection, EV, parser, lookahead, joint-EV portfolio unit tests
 node test/ui-test.mjs     # headless Chrome walkthrough: picks, filters, season, trends, push, offline
 BASE=http://127.0.0.1:3910 node test/pool-ui-test.mjs   # Pool tab: paste preview, chalk slider, sorting
+BASE=http://127.0.0.1:3911 node test/portfolio-ui-test.mjs   # two configured entries: per-entry picks, portfolio table, λ slider, season paths (picks week 1 then clears)
 ```

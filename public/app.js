@@ -3,7 +3,11 @@ import * as crowd from '/crowd.js';
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const pct = (p) => p == null ? '—' : Math.round(p * 100) + '%';
-const state = { data: null, week: null, season: null, view: 'pick', filter: 'all', open: null, sort: 'ev', chalk: null };
+const state = { data: null, week: null, season: null, view: 'pick', filter: 'all', open: null, sort: 'ev', chalk: null, entry: 0, objective: 'ev' };
+// My entries: d.myEntries (server) is one row per entry; picks per entry live in d.entryPicks[i]. Entry 0 is the default.
+const entries = (d) => d.myEntries?.length ? d.myEntries : [{ id: 0, name: 'Me', used: [], alive: true, picks: d.picks }];
+const picksOf = (d, i) => d.entryPicks?.[i] || (i === 0 ? d.picks : {}) || {};
+const entryChips = (d, onPick) => entries(d).length > 1 ? `<div class="chips" id="entryChips">${entries(d).map((e, i) => `<button data-e="${i}" class="${state.entry === i ? 'on' : ''}" ${e.alive ? '' : 'style="text-decoration:line-through"'}>${esc(e.name)}</button>`).join('')}</div>` : '';
 const toast = (m) => { const t = $('#toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => (t.style.display = 'none'), 2600); };
 
 async function api(path, body) {
@@ -29,14 +33,16 @@ function render() {
 
 /* ---------- Pick view ---------- */
 function renderPick() {
-  const d = state.data; const myPick = d.picks[d.week]; const now = Date.now();
+  const d = state.data; if (state.entry >= entries(d).length) state.entry = 0; const me = entries(d)[state.entry]; const myPicks = picksOf(d, state.entry); const myPick = myPicks[d.week]; const now = Date.now();
+  const usedSet = new Set([...me.used, ...Object.entries(myPicks).filter(([w]) => +w !== d.week).map(([, p]) => p.team)]);
+  d.rows.forEach((r) => { r.used = usedSet.has(r.team); });
   const dl = d.deadline ? new Date(d.deadline) : null; const ms = dl ? dl - now : null;
   const cd = ms == null ? '' : ms < 0 ? 'Deadline passed' : ms < 36e5 ? `${Math.ceil(ms / 6e4)} min left` : ms < 864e5 ? `${Math.floor(ms / 36e5)}h ${Math.floor((ms % 36e5) / 6e4)}m left` : `${Math.floor(ms / 864e5)}d ${Math.floor((ms % 864e5) / 36e5)}h left`;
   const rows = d.rows.filter((r) => state.filter === 'all' || (state.filter === 'home' && r.home) || (state.filter === 'fav' && r.prob >= 0.6) || (state.filter === 'avail' && !r.used));
   const seen = new Set();
-  let html = `<div class="card"><div class="deadline"><div><div class="big">${myPick ? `${esc(myPick.team)} locked` : 'No pick yet'}</div><div class="sub">${dl ? `Pick by ${dl.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${cd}` : ''}</div></div>
+  let html = entryChips(d) + `<div class="card"><div class="deadline"><div><div class="big">${myPick ? `${esc(myPick.team)} locked` : 'No pick yet'}${entries(d).length > 1 ? ` <small style="color:var(--muted);font-weight:400">· ${esc(me.name)}${me.alive ? '' : ' (eliminated)'}</small>` : ''}</div><div class="sub">${dl ? `Pick by ${dl.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${cd}` : ''}</div></div>
     ${myPick ? `<span class="pill ${myPick.result === 'win' ? 'good' : myPick.result === 'loss' ? 'bad' : 'info'}">${myPick.result ? myPick.result.toUpperCase() + (myPick.score ? ' ' + myPick.score : '') : 'PENDING'}</span>` : `<span class="pill warn">OPEN</span>`}</div>
-    ${d.plan?.plan?.length ? `<div class="note" style="margin-top:8px">Season plan suggests <b>${esc(d.plan.plan[0].team || '—')}</b> this week · projected survival to W18 ${pct(d.plan.survival)}</div>` : ''}</div>`;
+    ${d.portfolio?.best ? `<div class="note" style="margin-top:8px">Portfolio (joint EV) suggests <b>${esc(d.portfolio.best.teams[state.entry] || '—')}</b> for ${esc(me.name)} this week${d.portfolio.hedge && d.portfolio.hedge !== d.portfolio.best ? ` · hedge row: ${d.portfolio.hedge.teams.map(esc).join(' / ')} (wipeout ${pct(d.portfolio.hedge.wipeout)} vs ${pct(d.portfolio.best.wipeout)})` : ''} · details in the Pool tab</div>` : d.plan?.plan?.length ? `<div class="note" style="margin-top:8px">Season plan suggests <b>${esc(d.plan.plan[0].team || '—')}</b> this week · projected survival to W18 ${pct(d.plan.survival)}</div>` : ''}</div>`;
   if (d.pool) {
     const P = d.pool; const hist = P.history[d.week - 1];
     const top = Object.entries(P.projected?.pct || P.share).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([t, v]) => `${esc(t)} ${pct(v)}`).join(' · ');
@@ -72,11 +78,12 @@ function renderPick() {
   html += rows.length ? '</div>' : '<div class="empty">No games match</div></div>';
   html += `<div class="card"><h2>Sources</h2><div class="note">${d.sources.map(esc).join(' · ')}<br>Updated ${new Date(d.generatedAt).toLocaleTimeString()}. Win% = 75% market + 25% Elo, then injury and rest adjustments. Survivor score also discounts teams with better future weeks${d.pool ? " and nudges toward picks the projected pool is avoiding" : ""}.</div></div>`;
   $('#v-pick').innerHTML = html;
-  $('#v-pick').querySelectorAll('.chips button').forEach((b) => b.onclick = () => { state.filter = b.dataset.f; renderPick(); });
+  $('#v-pick').querySelectorAll('.chips button[data-f]').forEach((b) => b.onclick = () => { state.filter = b.dataset.f; renderPick(); });
+  $('#v-pick').querySelectorAll('#entryChips button').forEach((b) => b.onclick = () => { state.entry = +b.dataset.e; state.open = null; renderPick(); renderSeason(); });
   $('#v-pick').querySelectorAll('.row').forEach((row) => row.onclick = (e) => { if (e.target.closest('button')) return; state.open = state.open === row.dataset.k ? null : row.dataset.k; renderPick(); });
   $('#v-pick').querySelectorAll('button.pick').forEach((b) => b.onclick = async () => {
     const team = b.dataset.team; const un = myPick?.team === team;
-    try { const r = await api('/api/pick', { season: d.season, week: d.week, team: un ? null : team }); d.picks = r.picks; toast(un ? `Week ${d.week} pick cleared` : `${team} locked for week ${d.week}`); await load(); }
+    try { const r = await api('/api/pick', { season: d.season, week: d.week, team: un ? null : team, entry: state.entry }); d.picks = r.picks; d.entryPicks = r.entryPicks; toast(un ? `Week ${d.week} pick cleared` : `${team} locked for week ${d.week}${entries(d).length > 1 ? ` (${me.name})` : ''}`); await load(); }
     catch (e) { toast(e.message); }
   });
 }
@@ -85,13 +92,19 @@ function renderPick() {
 function liveProjection() {
   // Recompute this week's projection client-side when the chalk slider moves; otherwise use the server's numbers.
   const P = state.data.pool?.projected; if (!P) return null;
-  const cf = state.chalk ?? P.chalkFactor; if (cf === P.chalkFactor) return { ...P, chalkFactor: cf };
+  const cf = state.chalk ?? P.chalkFactor; const lam = state.lambda ?? P.lambda ?? 1; if (cf === P.chalkFactor && lam === (P.lambda ?? 1)) return { ...P, chalkFactor: cf, lambda: lam };
   const teams = Object.keys(P.winProb);
-  const pp = crowd.projectPicks({ rivals: P.rivalUsed, teams, consensus: P.consensus, week: state.data.week, chalkFactor: cf, factorOf: (r) => r.f });
+  const pp = crowd.projectPicks({ rivals: P.rivalUsed, teams, consensus: P.consensus, week: state.data.week, chalkFactor: cf, factorOf: (r) => r.f, lambda: lam });
   const { ev, surv, survIf } = crowd.survivorEV({ teams, pct: pp.pct, winProb: P.winProb, oppOf: P.oppOf });
   const base = teams.reduce((a, t) => a + survIf[t] * P.winProb[t], 0) / Math.max(1e-9, teams.reduce((a, t) => a + P.winProb[t], 0));
   const leverage = Object.fromEntries(teams.map((t) => [t, Math.max(0.6, Math.min(1.6, base / Math.max(survIf[t], 1e-6)))]));
-  return { ...P, pct: pp.pct, count: pp.count, ev, surv, survIf, leverage, chalkFactor: cf };
+  return { ...P, pct: pp.pct, count: pp.count, ev, surv, survIf, leverage, chalkFactor: cf, lambda: lam };
+}
+/** Joint-EV portfolio for my alive entries, recomputed client-side from the (possibly live) projection. */
+function livePortfolio(P) {
+  const d = state.data; const mine = entries(d).filter((e) => e.alive); if (mine.length < 2 || !P) return null;
+  const teams = d.rows.filter((r) => !r.done && P.winProb[r.team] != null).map((r) => r.team);
+  return crowd.portfolio({ entries: mine, teams, winProb: P.winProb, oppOf: P.oppOf, rivalPick: P.count, mustDiffer: state.mustDiffer ?? P.mustDiffer });
 }
 function renderPool() {
   const d = state.data; const P = liveProjection(); const sgRows = d.sg ? Object.keys(d.sg.data).length : 0;
@@ -104,7 +117,9 @@ function renderPool() {
   html += `<div class="card"><h2>Projected pool picks <span class="est">estimate</span></h2>
     <div class="stat"><span><b>${rivals}</b>alive rivals${P.myEntry ? ` (you: ${esc(P.myEntry)})` : ' (set your entry name in Settings)'}</span><span><b>${pct(P.surv)}</b>expected to survive</span><span><b>${d.sg ? 'SurvivorGrid' : 'softmax'}</b>prior</span></div>
     <label class="f">Chalk factor <b id="cfVal">${cf.toFixed(2)}</b> <span class="note">(1 = national consensus shape; higher = rivals pile on favorites harder; lower = flatter)</span><input type="range" id="cf" min="0.25" max="3" step="0.05" value="${cf}"></label>
-    <div style="display:flex;gap:8px"><button class="btn" id="cfSave" ${cf === (d.pool.projected.chalkFactor) ? 'disabled' : ''}>Save as default</button>${P.chalk ? `<span class="note" style="align-self:center">per-rival behaviour tuning on</span>` : ''}</div></div>`;
+    <label class="f">Same-owner diversification λ <b id="lamVal">${(P.lambda ?? 1).toFixed(2)}</b> <span class="note">(1 = off, entries of one owner pick independently; lower = an owner is less likely to put two entries on the same team; ${P.owners} owners behind ${rivals} rival entries)</span><input type="range" id="lam" min="0" max="1" step="0.05" value="${P.lambda ?? 1}"></label>
+    <div style="display:flex;gap:8px"><button class="btn" id="cfSave" ${cf === d.pool.projected.chalkFactor && (P.lambda ?? 1) === (d.pool.projected.lambda ?? 1) ? 'disabled' : ''}>Save as default</button>${P.chalk ? `<span class="note" style="align-self:center">per-rival behaviour tuning on</span>` : ''}</div></div>`;
+  html += renderPortfolio(P);
   // Weekly table
   const cols = [['team', 'Team'], ['prob', 'W%'], ['consensus', 'SG P%'], ['pct', 'Pool P%'], ['avail', 'Avail #'], ['ev', 'EV'], ['lev', 'Lev']];
   const seen = new Set(); const rows = d.rows.filter((r) => !seen.has(r.team) && seen.add(r.team)).map((r) => ({ team: r.team, opp: r.opp, home: r.home, used: r.used, prob: P.winProb[r.team] ?? r.prob, consensus: d.sg?.data?.[r.team]?.consensusPct ?? null, pct: P.pct[r.team] ?? 0, avail: P.avail[r.team] ?? 0, ev: P.ev[r.team] ?? r.prob, lev: P.leverage[r.team] ?? 1 }));
@@ -129,8 +144,35 @@ function renderPool() {
   $('#v-pool').innerHTML = html; bindSg();
   $('#v-pool').querySelectorAll('th.s').forEach((h) => h.onclick = () => { state.sort = h.dataset.s; renderPool(); });
   const cfEl = $('#cf'); if (cfEl) { cfEl.oninput = () => { $('#cfVal').textContent = (+cfEl.value).toFixed(2); }; cfEl.onchange = () => { state.chalk = +cfEl.value; renderPool(); }; }
-  const cfSave = $('#cfSave'); if (cfSave) cfSave.onclick = async () => { try { await api('/api/settings', { chalkFactor: state.chalk }); toast('Chalk factor saved'); await load(); } catch (e) { toast(e.message); } };
+  const lamEl = $('#lam'); if (lamEl) { lamEl.oninput = () => { $('#lamVal').textContent = (+lamEl.value).toFixed(2); }; lamEl.onchange = () => { state.lambda = +lamEl.value; renderPool(); }; }
+  const cfSave = $('#cfSave'); if (cfSave) cfSave.onclick = async () => { try { await api('/api/settings', { chalkFactor: state.chalk ?? P.chalkFactor, lambda: state.lambda ?? P.lambda ?? 1 }); toast('Projection defaults saved'); await load(); } catch (e) { toast(e.message); } };
+  $('#v-pool').querySelectorAll('#objChips button').forEach((b) => b.onclick = () => { state.objective = b.dataset.o; renderPool(); });
+  const md = $('#mustDiffer'); if (md) md.onchange = () => { state.mustDiffer = md.checked; renderPool(); };
+  const pfMore = $('#pfMore'); if (pfMore) pfMore.onclick = () => { state.pfAll = true; renderPool(); };
   const more = $('#invMore'); if (more) more.onclick = () => { state.invAll = true; renderPool(); };
+}
+/** Portfolio card: top assignment combinations for my entries ranked by the chosen objective. */
+function renderPortfolio(P) {
+  const d = state.data; const mine = entries(d);
+  if (mine.length < 2) return '';
+  const pf = livePortfolio(P); const alive = mine.filter((e) => e.alive);
+  let html = `<div class="card"><h2>Portfolio: ${alive.length} of ${mine.length} entries alive <span class="est">estimate</span></h2>`;
+  if (!pf?.ranked?.length) return html + `<div class="empty">${alive.length < 2 ? 'Fewer than two entries alive; use the single-entry EV above.' : pf?.empty ? 'An entry has no available team this week.' : 'No games to enumerate this week.'}</div></div>`;
+  const obj = state.objective; const key = { ev: (r) => -r.jointEV, wipe: (r) => r.wipeout - r.jointEV * 0.001, bal: (r) => -(r.jointEV / Math.max(pf.best.jointEV, 1e-9) - r.wipeout / Math.max(pf.best.wipeout, 1e-6) * 0.5) };
+  const ranked = pf.ranked.slice().sort((a, b) => key[obj](a) - key[obj](b));
+  const shown = ranked.slice(0, state.pfAll ? 200 : 12);
+  html += `<div class="note" style="margin-bottom:6px">Joint EV = expected share of the surviving pool held by my entries, summed over every outcome of ${pf.games.length} enumerated games (${(1 << pf.games.length).toLocaleString()} outcomes)${pf.truncated ? ', assignment list truncated' : ''}. Rivals on games outside that set survive at their own rate. My own entries count in the denominator, so stacking one team leaks equity. The hedge row is the best split across 2+ teams: most of the wipeout reduction with little EV cost.</div>
+    <div class="chips" id="objChips">${[['ev', 'Max joint EV'], ['wipe', 'Min wipeout'], ['bal', 'Balance']].map(([k, l]) => `<button data-o="${k}" class="${obj === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <label class="f" style="margin-bottom:6px"><input type="checkbox" id="mustDiffer" style="width:auto" ${(state.mustDiffer ?? P.mustDiffer) ? 'checked' : ''}> My entries must take different teams</label>
+    <div class="note" style="margin-bottom:4px">${alive.map((e, i) => `E${i + 1} = ${esc(e.name)}`).join(' · ')}. Rows where swapping the teams between entries scores the same are shown once.</div>
+    <div class="heatwrap"><table><tr><th>${alive.map((e, i) => `E${i + 1}`).join(' / ')}</th><th class="n">Joint EV</th><th class="n">Wipeout</th><th class="n">All live</th><th class="n">E[live]</th><th class="n">Teams</th></tr>`;
+  for (const r of shown) {
+    const isHedge = pf.hedge && r === pf.hedge; const isBest = r === pf.best;
+    html += `<tr style="${isHedge ? 'outline:1px solid var(--accent);outline-offset:-1px' : ''}"><td><b>${r.teams.map(esc).join(' / ')}</b>${r.mirrors ? ' <span class="note">either way</span>' : ''}${isBest ? ' <span class="pill good">best EV</span>' : ''}${isHedge ? ' <span class="pill info">hedge</span>' : ''}${pf.safest === r ? ' <span class="pill warn">safest</span>' : ''}</td><td class="n ev">${(r.jointEV * 100).toFixed(2)}%</td><td class="n" style="color:${r.wipeout > 0.15 ? 'var(--bad)' : 'inherit'}">${pct(r.wipeout)}</td><td class="n">${pct(r.allSurvive)}</td><td class="n">${r.expSurvivors.toFixed(2)}</td><td class="n">${r.distinct}</td></tr>`;
+  }
+  html += `</table></div>${ranked.length > shown.length ? `<button class="btn" id="pfMore" style="margin-top:8px">Show all ${ranked.length}</button>` : ''}`;
+  if (d.paths?.collisions?.length) html += `<div class="note" style="margin-top:8px;color:var(--warn)">Collision weeks ahead: ${d.paths.collisions.map((c) => `W${c.week} ${c.teams.map(esc).join('/')}`).join(', ')} — see each entry's de-conflicted path in the Season tab.</div>`;
+  return html + `</div>`;
 }
 function bindSg() {
   const d = state.data; const out = $('#sgOut');
@@ -149,17 +191,19 @@ function bindSg() {
 
 /* ---------- Season view ---------- */
 function renderSeason() {
-  const d = state.data; const picks = d.picks; const plan = d.plan?.plan || [];
-  let html = `<div class="card"><h2>My picks</h2><div class="grid">`;
+  const d = state.data; const picks = picksOf(d, state.entry); const me = entries(d)[state.entry]; const path = d.paths?.paths?.find((p) => p.id === me.id); const plan = path?.plan || d.plan?.plan || [];
+  let html = entryChips(d) + `<div class="card"><h2>My picks${entries(d).length > 1 ? ` · ${esc(me.name)}` : ''}</h2><div class="grid">`;
   for (let w = 1; w <= 18; w++) { const p = picks[w]; const cls = p ? (p.result === 'win' ? 'win' : p.result === 'loss' ? 'loss' : 'pending') : ''; html += `<div class="cell ${cls}" data-w="${w}">W${w}<b>${p ? esc(p.team) : '·'}</b>${p?.score ? `<span class="note">${esc(p.score)}</span>` : ''}</div>`; }
   const wins = Object.values(picks).filter((p) => p.result === 'win').length, losses = Object.values(picks).filter((p) => p.result === 'loss').length;
-  html += `</div><div class="note" style="margin-top:8px">${wins} survived · ${losses} lost · ${Object.keys(picks).length} picked · teams used: ${Object.values(picks).map((p) => p.team).join(', ') || 'none'}</div></div>`;
-  html += `<div class="card"><h2>Optimal season plan from week ${d.week}</h2><div class="note" style="margin-bottom:6px">Maximizes joint survival odds using current lines and Elo. Projected survival through W18: <b>${pct(d.plan?.survival)}</b>. Lines shift weekly, so re-check each week.</div><table><tr><th>Wk</th><th>Team</th><th>Opp</th><th class="n">Win%</th></tr>`;
+  const burned = [...new Set([...(me.used || []), ...Object.values(picks).map((p) => p.team)])];
+  html += `</div><div class="note" style="margin-top:8px">${wins} survived · ${losses} lost · ${Object.keys(picks).length} picked · teams used: ${burned.map(esc).join(', ') || 'none'}${me.onSheet ? ' (includes the workbook row)' : ''}</div></div>`;
+  const collide = d.paths?.collisions?.length ? `<br><span style="color:var(--warn)">Collision weeks (2+ of my entries want the same team unconstrained): ${d.paths.collisions.map((c) => `W${c.week} ${c.teams.map(esc).join('/')}`).join(', ')}</span> — paths below are de-conflicted so entries do not spend the same team in the same week.` : '';
+  html += `<div class="card"><h2>Optimal season plan from week ${d.week}${entries(d).length > 1 ? ` · ${esc(me.name)}` : ''}</h2><div class="note" style="margin-bottom:6px">Maximizes joint survival odds using current lines and Elo. Projected survival through W18: <b>${pct(path?.survival ?? d.plan?.survival)}</b>. Lines shift weekly, so re-check each week.${collide}</div><table><tr><th>Wk</th><th>Team</th><th>Opp</th><th class="n">Win%</th></tr>`;
   for (const p of plan) html += `<tr><td>${p.week}</td><td><b>${esc(p.team || '—')}</b></td><td>${p.team ? (p.home ? 'vs ' : '@ ') + esc(p.opp) : ''}</td><td class="n">${pct(p.prob)}</td></tr>`;
   html += `</table></div>`;
   // Heat map: team x week projected win prob
   const teams = Object.keys(d.projection).sort((a, b) => (d.ratings[b] || 0) - (d.ratings[a] || 0));
-  const used = new Set(Object.values(picks).map((p) => p.team));
+  const used = new Set(burned);
   html += `<div class="card"><h2>Win probability by week (all teams)</h2><div class="note" style="margin-bottom:6px">Darker green = safer. Outlined = your pick. Rows sorted by Elo. Scroll sideways.</div><div class="heatwrap"><div class="heat" style="grid-template-columns:auto repeat(18,minmax(26px,1fr))"><div class="t"></div>${Array.from({ length: 18 }, (_, i) => `<div class="c" style="background:none;color:var(--muted)">${i + 1}</div>`).join('')}`;
   for (const t of teams) {
     html += `<div class="t" style="${used.has(t) ? 'color:var(--muted)' : ''}">${esc(t)}</div>`;
@@ -171,6 +215,7 @@ function renderSeason() {
   html += `</div></div></div>`;
   $('#v-season').innerHTML = html;
   $('#v-season').querySelectorAll('.cell').forEach((c) => c.onclick = () => { state.week = +c.dataset.w; state.view = 'pick'; showView(); load(); });
+  $('#v-season').querySelectorAll('#entryChips button').forEach((b) => b.onclick = () => { state.entry = +b.dataset.e; renderSeason(); renderPick(); });
 }
 
 /* ---------- Trends view ---------- */
@@ -219,7 +264,9 @@ function renderSettings() {
     <button class="btn primary" id="saveS">Save</button></div>
     <div class="card"><h2>Pool projection</h2>
     <div class="note" style="margin-bottom:8px">Your own entry is excluded from the rival count. Behaviour tuning raises the chalk factor for rivals who usually take the biggest favorite they still hold and lowers it for contrarians (needs 3+ recorded weeks).</div>
-    <label class="f">My entry name (as it appears in the workbook)<input id="myEntry" list="entryNames" value="${esc(s.myEntry || '')}" placeholder="Last, First #1"><datalist id="entryNames">${(d.pool?.projected?.inventory || []).map((x) => `<option value="${esc(x.name)}">`).join('')}</datalist></label>
+    <label class="f">My entries, one per line (workbook names; blank line = an entry not on the sheet)<textarea id="myEntries" class="paste" style="min-height:70px" placeholder="Ryan, Andrew #1&#10;Ryan, Andrew #2">${esc((s.myEntries?.length ? s.myEntries : [s.myEntry || '']).join('\n'))}</textarea><datalist id="entryNames">${(d.pool?.projected?.inventory || []).map((x) => `<option value="${esc(x.name)}">`).join('')}</datalist></label>
+    <div class="note" style="margin-bottom:8px">${entries(d).map((e) => `${esc(e.name)}: ${e.onSheet ? 'matched on the sheet' : 'not on the sheet'}${e.alive ? '' : ' · eliminated'}`).join(' · ')}</div>
+    <label class="f"><input type="checkbox" id="mustDifferS" style="width:auto" ${s.mustDiffer ? 'checked' : ''}> Portfolio: my entries must take different teams</label>
     <label class="f"><input type="checkbox" id="behaviour" style="width:auto" ${s.behaviour ? 'checked' : ''}> Per-rival behaviour tuning (chalk hit rate)</label>
     <label class="f">Elite teams for the lookahead (blank = top 8 by projected win%)<input id="elite" value="${esc((s.elite || []).join(' '))}" placeholder="KC BUF DET PHI BAL"></label>
     <button class="btn primary" id="savePool">Save</button></div>
@@ -232,7 +279,8 @@ function renderSettings() {
     <div class="card"><h2>About the model</h2><div class="note">Win probability = 75% vig-free sportsbook moneyline (DraftKings via ESPN; nflverse closing lines as fallback) + 25% Elo (1999–present, margin-of-victory, home field, rest). Injuries from ESPN nudge the number slightly since lines already price most news. The season planner maximizes the product of weekly win probabilities across remaining weeks without reusing teams, so it will tell you to save elite teams for the weeks when nothing else is safe.</div></div>`;
   $('#saveS').onclick = async () => { try { await api('/api/settings', { reminderDay: +$('#rDay').value, reminderHour: +$('#rHour').value, reminderTz: $('#rTz').value.trim() }); toast('Saved'); load(); } catch (e) { toast(e.message); } };
   $('#savePool').onclick = async () => { const elite = $('#elite').value.toUpperCase().split(/[\s,]+/).filter(Boolean); if (elite.some((t) => !/^[A-Z]{2,3}$/.test(t))) return toast('Elite teams must be codes like KC');
-    try { await api('/api/settings', { myEntry: $('#myEntry').value.trim(), behaviour: $('#behaviour').checked, elite }); toast('Saved'); load(); } catch (e) { toast(e.message); } };
+    const myEntries = $('#myEntries').value.split(/\r?\n/).map((x) => x.trim()); while (myEntries.length > 1 && !myEntries[myEntries.length - 1]) myEntries.pop(); if (myEntries.length > 8) return toast('At most 8 entries');
+    try { await api('/api/settings', { myEntries, myEntry: myEntries[0] || '', behaviour: $('#behaviour').checked, elite, mustDiffer: $('#mustDifferS').checked }); state.entry = 0; toast('Saved'); load(); } catch (e) { toast(e.message); } };
   $('#subBtn').onclick = async () => {
     try { const reg = await navigator.serviceWorker.ready; const p = await Notification.requestPermission(); if (p !== 'granted') return toast('Permission denied');
       const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64(d.vapidPublicKey) });
