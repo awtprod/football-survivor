@@ -25,15 +25,22 @@ State lives in `data/store.json` (picks, push subscriptions, settings). Data cac
 - Calibration table: how often closing-line favorites of each strength actually won since 2010
 
 ## Pool spreadsheet (other entries' history)
-Settings → Upload workbook takes the weekly "Knockout Pool" xlsx (column A entry, column B `PD`, columns headed `WEEK n`). Parsed with no dependencies (`lib/pool.js`), stored in `data/pool.json`. From it the model derives:
-- who is still alive (an entry whose recorded pick lost, or who has no pick in a recorded finished week, is out)
-- which teams each alive entry has burned, so a softmax-over-win-probability crowd model (steepness fitted by max likelihood to the pool's own past picks) forecasts this week's pick distribution
-- leverage per team: expected surviving share of the pool if an average team wins ÷ if this team wins. Survivor score gets `(leverage − 1) × win% × 0.5`; rows show `crowd %` and flag `crowd pick` / `contrarian edge`.
+Settings → Upload workbook takes the weekly "Knockout Pool" xlsx (column A entry, column B `PD`, columns headed `WEEK n`). Parsed with no dependencies (`lib/pool.js`), stored in `data/pool.json`. From it the model derives who is still alive and which teams each alive entry has burned.
+
+## Pool tab: projected pick distribution (`public/crowd.js`, shared by server and client)
+All of this is an estimate of other people's behaviour and is labelled as such in the UI.
+- **SurvivorGrid import**: paste the grid or a CSV (`team, winProb, consensusPct`) per week. Win% accepts `81%`, `0.81` or a moneyline (`-571`); pick share accepts `29%` or `0.29`. Preview, then save; stored in `data/store.json` under `sg[season][week]`. Teams left out get a 0.5% floor. Without a paste the prior is the softmax over win probability (steepness fitted to the pool's past picks).
+- **Projection**: for each alive rival (your own entry, named in Settings, is excluded) `prior(t) = consensus(t)^chalkFactor`, zeroed for teams they have burned, renormalised. Pool P% is the average over rivals. The chalk slider recomputes live in the browser; "Save as default" persists it. Optional behaviour tuning maps each rival's chalk hit rate (did they take the biggest favourite they still held?) to a per-rival factor.
+- **EV** = win% × (rivals surviving on a neutral pick ÷ rivals surviving if this team wins); rivals on your team survive, rivals on your opponent are eliminated, others survive at their own rate. **Lev** is that ratio normalised so 1 is average; the survivor score adds `(lev − 1) × win% × 0.5`. **Avail #** = alive rivals who can still take the team.
+- **Lookahead**: expected number of rivals still holding each elite team (tagged in Settings, else top 8 by remaining projected win%) entering each future week, thinning rivals by projected picks and losses. Weeks where most elite teams are burned are flagged as carnage candidates.
+- **Rival inventory**: alive rivals by elite teams still held; zero held = blocked.
 
 ## Reminders
 Server checks every 5 minutes. If the current week has no pick, it sends web-push at 24h, 3h, and 0h before the deadline (Saturday 12:00 America/New_York by default; configurable in Settings). Picks are auto-graded once games go final.
 
 ## Test
 ```
+node --test test/crowd-test.mjs   # projection, EV, parser, lookahead unit tests
 node test/ui-test.mjs     # headless Chrome walkthrough: picks, filters, season, trends, push, offline
+BASE=http://127.0.0.1:3910 node test/pool-ui-test.mjs   # Pool tab: paste preview, chalk slider, sorting
 ```

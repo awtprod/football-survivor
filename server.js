@@ -6,6 +6,7 @@ import * as nfl from './lib/nfl.js';
 import * as model from './lib/model.js';
 import * as store from './lib/store.js';
 import * as pool from './lib/pool.js';
+import * as crowd from './public/crowd.js';
 
 const PORT = +(process.env.PORT || 3910);
 const PUB = path.resolve('public');
@@ -33,11 +34,17 @@ async function analyze(season, week, force = false) {
   const rows = model.rateWeek({ espnGames, nvGames: games, elo, injuries, season, week, used: usedBefore, remainingWeeks: projection });
   // Pool: other entries' pick history -> alive count, forecast crowd, leverage. Nudges the survivor score.
   const poolDoc = pool.load(); let poolInfo = null;
+  const sg = store.get().sg?.[season]?.[week] || null;
   if (poolDoc?.season === season && poolDoc.entries?.length) {
     const fit = model.fitCrowdK(poolDoc.entries, projection, week);
     poolInfo = model.poolAnalysis({ entries: poolDoc.entries, projection, week, rows, k: fit.k });
     poolInfo.fit = fit; poolInfo.importedAt = poolDoc.importedAt; poolInfo.fileName = poolDoc.fileName; poolInfo.unknown = poolDoc.unknown;
-    for (const r of rows) { r.crowd = poolInfo.share[r.team] ?? 0; r.leverage = poolInfo.leverage[r.team] ?? 1; r.poolScore = r.prob * r.leverage; r.survivor += (r.leverage - 1) * r.prob * 0.5; if (r.crowd >= 0.25) r.flags.push('crowd pick'); else if (r.leverage >= 1.05 && r.prob >= 0.6) r.flags.push('contrarian edge'); }
+    // Pool-specific projection: SurvivorGrid consensus (if pasted) as the prior, conditioned on each alive rival's burned teams.
+    // Without a paste the prior is the softmax crowd share, so conditioning still applies.
+    poolInfo.projected = projectPool({ poolDoc, projection, week, rows, sg, k: fit.k });
+    const P = poolInfo.projected;
+    for (const r of rows) { r.crowd = P.pct[r.team] ?? 0; r.avail = P.avail[r.team] ?? 0; r.consensus = sg?.data?.[r.team]?.consensusPct ?? null; r.ev = P.ev[r.team] ?? r.prob; r.leverage = P.leverage[r.team] ?? 1;
+      r.survivor += (r.leverage - 1) * r.prob * 0.5; if (r.crowd >= 0.25) r.flags.push('crowd pick'); else if (r.leverage >= 1.05 && r.prob >= 0.6) r.flags.push('contrarian edge'); }
     rows.sort((a, b) => b.survivor - a.survivor);
   }
   const usedThrough = Object.entries(picks).filter(([w]) => +w < week).map(([, p]) => p.team);
@@ -45,10 +52,44 @@ async function analyze(season, week, force = false) {
   // Team trend series (Elo over the last 2 seasons)
   const trends = {};
   for (const t of Object.keys(teams)) trends[t] = (elo.history[t] || []).filter((h) => h.season >= season - 1).map((h) => ({ s: h.season, w: h.week, e: Math.round(h.elo) }));
-  const value = { season, week, rows, plan, pool: poolInfo, projection, trends, calibration: model.calibration(games), teams, ratings: elo.ratings, generatedAt: new Date().toISOString(),
+  const value = { season, week, rows, plan, pool: poolInfo, sg, projection, trends, calibration: model.calibration(games), teams, ratings: elo.ratings, generatedAt: new Date().toISOString(),
     sources: ['ESPN scoreboard (DraftKings lines, records, status)', 'ESPN injuries', 'nflverse games.csv (1999-present results, closing lines, rest days)'] };
   analysisCache = { at: Date.now(), key, value };
   return value;
+}
+
+/**
+ * Pool-specific pick projection for the week. Rivals = alive entries other than mine (my own entry, matched by
+ * settings.myEntry, is excluded). Prior per team = SurvivorGrid consensus when pasted, else the softmax crowd share.
+ * Returns pct/avail/ev for this week plus the multi-week lookahead and rival inventory (all estimates).
+ */
+function projectPool({ poolDoc, projection, week, rows, sg, k }) {
+  const st = store.get(); const settings = st.settings;
+  const live = model.aliveEntries(poolDoc.entries, projection, week).filter((e) => e.alive);
+  const mine = (settings.myEntry || '').trim().toLowerCase();
+  const rivals = live.filter((e) => e.name.trim().toLowerCase() !== mine);
+  const teams = rows.map((r) => r.team); const winProb = {}, oppOf = {};
+  for (const r of rows) { winProb[r.team] = sg?.data?.[r.team]?.winProb ?? r.prob; oppOf[r.team] = r.opp; }
+  let consensus;
+  if (sg?.data) consensus = Object.fromEntries(teams.map((t) => [t, sg.data[t]?.consensusPct ?? crowd.FLOOR]));
+  else { let z = 0; const w = {}; for (const t of teams) { w[t] = Math.exp(k * winProb[t]); z += w[t]; } consensus = Object.fromEntries(teams.map((t) => [t, w[t] / z])); }
+  const probs = {}; for (const [t, arr] of Object.entries(projection)) for (const x of arr) (probs[x.week] ??= {})[t] = x.prob;
+  const chalk = settings.behaviour ? crowd.chalkRates(poolDoc.entries, probs, week) : null;
+  const factorOf = (r) => settings.entrantChalk?.[r.name] ?? chalk?.[r.name]?.mult ?? 1;
+  const pp = crowd.projectPicks({ rivals, teams, consensus, week, chalkFactor: settings.chalkFactor ?? 1, factorOf });
+  const { ev, surv, survIf } = crowd.survivorEV({ teams, pct: pp.pct, winProb, oppOf });
+  // Leverage (normalised around 1, as before) now driven by the pool-specific shares: base survival ÷ survival if T wins.
+  const base = teams.reduce((a, t) => a + survIf[t] * winProb[t], 0) / Math.max(1e-9, teams.reduce((a, t) => a + winProb[t], 0));
+  const leverage = Object.fromEntries(teams.map((t) => [t, Math.max(0.6, Math.min(1.6, base / Math.max(survIf[t], 1e-6)))]));
+  const avail = Object.fromEntries(teams.map((t) => [t, crowd.availableCount(rivals, t, week)]));
+  const la = crowd.lookahead({ rivals, week, probs, k, thisWeek: pp });
+  // Elite = user-tagged teams, else top 8 by mean projected win prob over the remaining weeks.
+  const meanFut = Object.entries(projection).map(([t, arr]) => { const f = arr.filter((x) => x.week > week); return [t, f.length ? f.reduce((s, x) => s + x.prob, 0) / f.length : 0]; }).sort((a, b) => b[1] - a[1]);
+  const elite = settings.elite?.length ? settings.elite : meanFut.slice(0, 8).map(([t]) => t);
+  const inventory = crowd.inventory(rivals, elite, week);
+  // Rival-by-rival used lists so the client can recompute the projection live when the chalk slider moves.
+  const rivalUsed = rivals.map((r) => ({ name: r.name, used: Object.entries(r.picks).filter(([w]) => +w < week).map(([, t]) => t), f: factorOf(r) }));
+  return { pct: pp.pct, count: pp.count, ev, surv, survIf, leverage, avail, rivals: rivals.length, consensus, winProb, oppOf, rivalUsed, lookahead: la, elite, inventory, chalk, myEntry: settings.myEntry || null, chalkFactor: settings.chalkFactor ?? 1 };
 }
 
 // --- Results grading: mark picks won/lost once games are final ---
@@ -156,7 +197,15 @@ http.createServer(async (req, res) => {
         if (Number.isInteger(b.reminderDay) && b.reminderDay >= 0 && b.reminderDay <= 6) s.settings.reminderDay = b.reminderDay;
         if (Number.isInteger(b.reminderHour) && b.reminderHour >= 0 && b.reminderHour <= 23) s.settings.reminderHour = b.reminderHour;
         if (typeof b.reminderTz === 'string' && b.reminderTz.length < 64) { try { new Date().toLocaleString('en-US', { timeZone: b.reminderTz }); s.settings.reminderTz = b.reminderTz; } catch {} }
+        if (typeof b.chalkFactor === 'number' && b.chalkFactor >= 0.25 && b.chalkFactor <= 3) s.settings.chalkFactor = Math.round(b.chalkFactor * 100) / 100;
+        if (typeof b.myEntry === 'string') s.settings.myEntry = b.myEntry.slice(0, 80);
+        if (typeof b.behaviour === 'boolean') s.settings.behaviour = b.behaviour;
+        if (Array.isArray(b.elite) && b.elite.length <= 16 && b.elite.every((t) => VALID_TEAM.test(t))) s.settings.elite = b.elite;
+        if (b.entrantChalk && typeof b.entrantChalk === 'object' && !Array.isArray(b.entrantChalk)) {
+          const ec = {}; for (const [n, f] of Object.entries(b.entrantChalk).slice(0, 500)) if (typeof f === 'number' && f >= 0.25 && f <= 3) ec[String(n).slice(0, 80)] = f; s.settings.entrantChalk = ec;
+        }
       });
+      analysisCache.at = 0;
       return json(res, 200, store.get().settings);
     }
     if (url.pathname === '/api/pool' && req.method === 'POST') {
@@ -170,6 +219,19 @@ http.createServer(async (req, res) => {
       const doc = pool.save(parsed, { season, fileName });
       analysisCache.at = 0;
       return json(res, 200, { entries: doc.entries.length, weeks: doc.weeks.filter((w) => doc.entries.some((e) => e.picks[w])), unknown: doc.unknown });
+    }
+    if (url.pathname === '/api/sg' && req.method === 'POST') {
+      const b = await body(req);
+      const season = Number.isInteger(b.season) ? b.season : (await nfl.currentWeek()).season;
+      const week = b.week; if (!Number.isInteger(week) || week < 1 || week > 18) return json(res, 400, { error: 'bad week' });
+      if (b.clear) { store.save((s) => { delete s.sg?.[season]?.[week]; }); analysisCache.at = 0; return json(res, 200, { cleared: true }); }
+      const toCode = pool.aliasMap(await nfl.loadTeams());
+      let parsed; try { parsed = crowd.parseGrid(b.text, toCode); } catch (e) { return json(res, 400, { error: e.message }); }
+      if (b.preview) return json(res, 200, { rows: parsed.rows, unknown: parsed.unknown, skipped: parsed.skipped });
+      const doc = { data: parsed.data, importedAt: new Date().toISOString(), source: String(b.source || '').slice(0, 60) };
+      store.save((s) => { s.sg ??= {}; s.sg[season] ??= {}; s.sg[season][week] = doc; });
+      analysisCache.at = 0;
+      return json(res, 200, { teams: parsed.rows.length, unknown: parsed.unknown, skipped: parsed.skipped });
     }
     if (url.pathname === '/api/test-push' && req.method === 'POST') {
       const sent = await sendPush({ title: 'Survivor reminders are on', body: 'You will be nudged Saturday before noon if you have not picked.', url: '/', tag: 'survivor-test' });

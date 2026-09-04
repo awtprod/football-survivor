@@ -1,8 +1,9 @@
 /* Survivor Picks PWA client */
+import * as crowd from '/crowd.js';
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const pct = (p) => p == null ? '—' : Math.round(p * 100) + '%';
-const state = { data: null, week: null, season: null, view: 'pick', filter: 'all', open: null };
+const state = { data: null, week: null, season: null, view: 'pick', filter: 'all', open: null, sort: 'ev', chalk: null };
 const toast = (m) => { const t = $('#toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => (t.style.display = 'none'), 2600); };
 
 async function api(path, body) {
@@ -23,7 +24,7 @@ async function load(refresh = false) {
 function render() {
   const d = state.data; $('#hdr').textContent = `Survivor · ${d.season}`;
   const sel = $('#weekSel'); sel.innerHTML = Array.from({ length: 18 }, (_, i) => `<option value="${i + 1}" ${i + 1 === d.week ? 'selected' : ''}>Week ${i + 1}</option>`).join('');
-  renderPick(); renderSeason(); renderTrends(); renderSettings();
+  state.chalk = null; renderPick(); renderPool(); renderSeason(); renderTrends(); renderSettings();
 }
 
 /* ---------- Pick view ---------- */
@@ -38,10 +39,10 @@ function renderPick() {
     ${d.plan?.plan?.length ? `<div class="note" style="margin-top:8px">Season plan suggests <b>${esc(d.plan.plan[0].team || '—')}</b> this week · projected survival to W18 ${pct(d.plan.survival)}</div>` : ''}</div>`;
   if (d.pool) {
     const P = d.pool; const hist = P.history[d.week - 1];
-    const top = Object.entries(P.share).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([t, v]) => `${esc(t)} ${pct(v)}`).join(' · ');
+    const top = Object.entries(P.projected?.pct || P.share).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([t, v]) => `${esc(t)} ${pct(v)}`).join(' · ');
     const last = hist ? Object.entries(hist.teams).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([t, n]) => `${esc(t)} ${Math.round(n / hist.n * 100)}%`).join(' · ') : null;
     html += `<div class="card"><h2>Pool · ${P.alive} of ${P.total} entries alive</h2>
-      <div class="note">Forecast crowd this week: <b>${top || '—'}</b>${last ? `<br>Last week actual: ${last}` : ''}<br>Crowd model ${P.fit?.fitted ? `fitted to ${P.fit.n} past picks (k=${P.k})` : 'default (no past picks yet)'} · imported ${new Date(P.importedAt).toLocaleDateString()}${P.unknown?.length ? ` · <span style="color:var(--warn)">unrecognized: ${esc(P.unknown.slice(0, 5).join(', '))}</span>` : ''}</div></div>`;
+      <div class="note">Projected pool picks this week <span class="est">estimate</span>: <b>${top || '—'}</b>${last ? `<br>Last week actual: ${last}` : ''}<br>Prior: ${d.sg ? `SurvivorGrid consensus (pasted ${new Date(d.sg.importedAt).toLocaleDateString()})` : `win-prob softmax${P.fit?.fitted ? ` fitted to ${P.fit.n} past picks` : ' (paste SurvivorGrid data in the Pool tab for a better prior)'}`}, conditioned on each rival's burned teams · chalk ×${(P.projected?.chalkFactor ?? 1).toFixed(2)} · workbook imported ${new Date(P.importedAt).toLocaleDateString()}${P.unknown?.length ? ` · <span style="color:var(--warn)">unrecognized: ${esc(P.unknown.slice(0, 5).join(', '))}</span>` : ''}</div></div>`;
   }
   html += `<div class="chips">${[['all', 'All'], ['avail', 'Available'], ['fav', 'Favorites ≥60%'], ['home', 'Home']].map(([k, l]) => `<button data-f="${k}" class="${state.filter === k ? 'on' : ''}">${l}</button>`).join('')}</div><div class="card" id="rows">`;
   for (const r of rows) {
@@ -55,7 +56,7 @@ function renderPick() {
       <div class="meta">${r.spread != null ? (r.spread < 0 ? `${esc(r.team)} ${r.spread}` : `${esc(r.opp)} ${-r.spread}`) : 'no line'} · ${r.ml != null ? (r.ml > 0 ? '+' : '') + r.ml : ''} · Elo ${r.eloRating} vs ${r.oppElo}${r.form ? ` · form ${r.form}` : ''}${r.score ? ` · <b>${r.won ? 'W' : r.won === false ? 'L' : ''} ${r.score}</b>` : ''}</div>
       <div>${r.used ? '<span class="pill">already used</span>' : flags}</div>
       <div class="bar"><i style="width:${Math.round(r.prob * 100)}%"></i></div></div>
-      <div class="prob"><b>${pct(r.prob)}</b><span>${r.crowd != null ? `crowd ${pct(r.crowd)}` : 'win'}</span></div>
+      <div class="prob"><b>${pct(r.prob)}</b><span>${r.ev != null ? `pool ${pct(r.crowd)} · <span class="ev ${r.leverage >= 1.05 ? 'up' : r.leverage <= 0.95 ? 'dn' : ''}">EV ${r.ev.toFixed(2)}</span>` : r.crowd != null ? `crowd ${pct(r.crowd)}` : 'win'}</span></div>
       <button class="pick ${isPick ? 'on' : ''}" data-team="${esc(r.team)}" ${r.used ? 'disabled' : ''}>${isPick ? 'Picked' : 'Pick'}</button></div>`;
     if (state.open === r.espn + r.team) {
       html += `<div class="detail"><b>Why ${pct(r.prob)}</b><dl>
@@ -63,13 +64,13 @@ function renderPick() {
         <dt>Elo model</dt><dd>${pct(r.elo)} (${r.eloRating} vs ${r.oppElo}${r.home && !r.neutral ? ', +HFA' : ''})</dd>
         <dt>Rest</dt><dd>${r.rest ?? '?'} days vs ${r.oppRest ?? '?'}</dd>
         <dt>Injuries</dt><dd>${r.injuries.length ? esc(r.injuries.join('; ')) : 'none notable'}${r.injuryPenalty ? ` (−${(r.injuryPenalty * 100).toFixed(1)} pts raw)` : ''}</dd>
-        ${r.leverage != null ? `<dt>Pool</dt><dd>~${pct(r.crowd)} of alive entries expected here · leverage ${r.leverage.toFixed(2)}× (${r.leverage > 1.05 ? 'a win thins the field' : r.leverage < 0.95 ? 'riding with the crowd' : 'neutral'})</dd>` : ''}
+        ${r.ev != null ? `<dt>Pool (est.)</dt><dd>~${pct(r.crowd)} of ${d.pool.projected.rivals} alive rivals projected here${r.consensus != null ? ` (SurvivorGrid ${pct(r.consensus)})` : ''} · ${r.avail} can still take ${esc(r.team)} · EV ${r.ev.toFixed(2)} · leverage ${r.leverage.toFixed(2)}× (${r.leverage > 1.05 ? 'a win thins the field' : r.leverage < 0.95 ? 'riding with the crowd' : 'neutral'})</dd>` : r.leverage != null ? `<dt>Pool</dt><dd>~${pct(r.crowd)} of alive entries expected here · leverage ${r.leverage.toFixed(2)}×</dd>` : ''}
         <dt>Future value</dt><dd>${r.futureStrong} more weeks ≥70% · best later spot ${pct(r.futureBest)}</dd>
         <dt>Record</dt><dd>${esc(r.record || '0-0')} ${r.broadcast ? '· ' + esc(r.broadcast) : ''}</dd></dl></div>`;
     }
   }
   html += rows.length ? '</div>' : '<div class="empty">No games match</div></div>';
-  html += `<div class="card"><h2>Sources</h2><div class="note">${d.sources.map(esc).join(' · ')}<br>Updated ${new Date(d.generatedAt).toLocaleTimeString()}. Win% = 75% market + 25% Elo, then injury and rest adjustments. Survivor score also discounts teams with better future weeks${d.pool ? " and nudges toward picks the rest of the pool is avoiding" : ""}.</div></div>`;
+  html += `<div class="card"><h2>Sources</h2><div class="note">${d.sources.map(esc).join(' · ')}<br>Updated ${new Date(d.generatedAt).toLocaleTimeString()}. Win% = 75% market + 25% Elo, then injury and rest adjustments. Survivor score also discounts teams with better future weeks${d.pool ? " and nudges toward picks the projected pool is avoiding" : ""}.</div></div>`;
   $('#v-pick').innerHTML = html;
   $('#v-pick').querySelectorAll('.chips button').forEach((b) => b.onclick = () => { state.filter = b.dataset.f; renderPick(); });
   $('#v-pick').querySelectorAll('.row').forEach((row) => row.onclick = (e) => { if (e.target.closest('button')) return; state.open = state.open === row.dataset.k ? null : row.dataset.k; renderPick(); });
@@ -78,6 +79,72 @@ function renderPick() {
     try { const r = await api('/api/pick', { season: d.season, week: d.week, team: un ? null : team }); d.picks = r.picks; toast(un ? `Week ${d.week} pick cleared` : `${team} locked for week ${d.week}`); await load(); }
     catch (e) { toast(e.message); }
   });
+}
+
+/* ---------- Pool view: SurvivorGrid import, projection table, lookahead, inventory ---------- */
+function liveProjection() {
+  // Recompute this week's projection client-side when the chalk slider moves; otherwise use the server's numbers.
+  const P = state.data.pool?.projected; if (!P) return null;
+  const cf = state.chalk ?? P.chalkFactor; if (cf === P.chalkFactor) return { ...P, chalkFactor: cf };
+  const teams = Object.keys(P.winProb);
+  const pp = crowd.projectPicks({ rivals: P.rivalUsed, teams, consensus: P.consensus, week: state.data.week, chalkFactor: cf, factorOf: (r) => r.f });
+  const { ev, surv, survIf } = crowd.survivorEV({ teams, pct: pp.pct, winProb: P.winProb, oppOf: P.oppOf });
+  const base = teams.reduce((a, t) => a + survIf[t] * P.winProb[t], 0) / Math.max(1e-9, teams.reduce((a, t) => a + P.winProb[t], 0));
+  const leverage = Object.fromEntries(teams.map((t) => [t, Math.max(0.6, Math.min(1.6, base / Math.max(survIf[t], 1e-6)))]));
+  return { ...P, pct: pp.pct, count: pp.count, ev, surv, survIf, leverage, chalkFactor: cf };
+}
+function renderPool() {
+  const d = state.data; const P = liveProjection(); const sgRows = d.sg ? Object.keys(d.sg.data).length : 0;
+  let html = `<div class="card"><h2>SurvivorGrid data · week ${d.week}</h2>
+    <div class="note">Paste the SurvivorGrid grid (or a CSV: <code>team, winProb, consensusPct</code>). Win% accepts 81%, 0.81 or a moneyline like −571; pick share accepts 29% or 0.29. Teams you leave out get a 0.5% floor.${d.sg ? `<br>Saved: ${sgRows} teams${d.sg.source ? ` from ${esc(d.sg.source)}` : ''} · ${new Date(d.sg.importedAt).toLocaleString()}` : '<br>Nothing saved for this week yet; the projection prior falls back to the win-prob softmax.'}</div>
+    <textarea class="paste" id="sgText" placeholder="LAC, 0.81, 0.29&#10;JAX, 74%, 21%&#10;DET, -571, 16%"></textarea>
+    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn" id="sgPreview">Preview</button><button class="btn primary" id="sgSave">Save week ${d.week}</button>${d.sg ? '<button class="btn" id="sgClear">Clear</button>' : ''}</div><div id="sgOut"></div></div>`;
+  if (!d.pool) { html += `<div class="card"><div class="empty">Upload the pool workbook in Settings to project your rivals' picks.</div></div>`; $('#v-pool').innerHTML = html; bindSg(); return; }
+  const rivals = P.rivals; const cf = P.chalkFactor;
+  html += `<div class="card"><h2>Projected pool picks <span class="est">estimate</span></h2>
+    <div class="stat"><span><b>${rivals}</b>alive rivals${P.myEntry ? ` (you: ${esc(P.myEntry)})` : ' (set your entry name in Settings)'}</span><span><b>${pct(P.surv)}</b>expected to survive</span><span><b>${d.sg ? 'SurvivorGrid' : 'softmax'}</b>prior</span></div>
+    <label class="f">Chalk factor <b id="cfVal">${cf.toFixed(2)}</b> <span class="note">(1 = national consensus shape; higher = rivals pile on favorites harder; lower = flatter)</span><input type="range" id="cf" min="0.25" max="3" step="0.05" value="${cf}"></label>
+    <div style="display:flex;gap:8px"><button class="btn" id="cfSave" ${cf === (d.pool.projected.chalkFactor) ? 'disabled' : ''}>Save as default</button>${P.chalk ? `<span class="note" style="align-self:center">per-rival behaviour tuning on</span>` : ''}</div></div>`;
+  // Weekly table
+  const cols = [['team', 'Team'], ['prob', 'W%'], ['consensus', 'SG P%'], ['pct', 'Pool P%'], ['avail', 'Avail #'], ['ev', 'EV'], ['lev', 'Lev']];
+  const seen = new Set(); const rows = d.rows.filter((r) => !seen.has(r.team) && seen.add(r.team)).map((r) => ({ team: r.team, opp: r.opp, home: r.home, used: r.used, prob: P.winProb[r.team] ?? r.prob, consensus: d.sg?.data?.[r.team]?.consensusPct ?? null, pct: P.pct[r.team] ?? 0, avail: P.avail[r.team] ?? 0, ev: P.ev[r.team] ?? r.prob, lev: P.leverage[r.team] ?? 1 }));
+  const k = state.sort; rows.sort((a, b) => k === 'team' ? a.team.localeCompare(b.team) : (b[k] ?? -1) - (a[k] ?? -1));
+  html += `<div class="card"><h2>Week ${d.week} by expected value</h2><div class="note" style="margin-bottom:6px">EV = win% × (rivals surviving on a neutral pick ÷ rivals surviving if this team wins), so it is win% discounted for company (it can beat win% only when you fade a crowd and their team loses). Lev = the same ratio normalised so 1 is average: above 1 a win thins the field, below 1 you ride with the crowd. Avail # = alive rivals who have not burned the team. Tap a header to sort.</div>
+    <div class="heatwrap"><table><tr>${cols.map(([c, l]) => `<th class="s ${c === 'team' ? '' : 'n'} ${k === c ? 'on' : ''}" data-s="${c}">${l}</th>`).join('')}</tr>`;
+  for (const r of rows) html += `<tr style="${r.used ? 'opacity:.42' : ''}"><td><b>${esc(r.team)}</b> <span class="note">${r.home ? 'vs' : '@'} ${esc(r.opp)}</span></td><td class="n">${pct(r.prob)}</td><td class="n">${r.consensus == null ? '—' : pct(r.consensus)}</td><td class="n"><b>${pct(r.pct)}</b></td><td class="n">${r.avail}</td><td class="n ev">${r.ev.toFixed(2)}</td><td class="n ev ${r.lev >= 1.05 ? 'up' : r.lev <= 0.95 ? 'dn' : ''}">${r.lev.toFixed(2)}</td></tr>`;
+  html += `</table></div></div>`;
+  // Lookahead heatmap
+  const L = P.lookahead; const elite = P.elite; const weeks = L.weeks;
+  const lowWeeks = weeks.filter((w) => elite.filter((t) => (L.avail[t]?.[w] ?? 0) <= rivals * 0.25).length >= elite.length / 2);
+  html += `<div class="card"><h2>Lookahead: rivals still holding each elite team <span class="est">estimate</span></h2>
+    <div class="note" style="margin-bottom:6px">Expected number of alive rivals who could still take the team entering each week, after projected picks and eliminations. Elite = ${state.data.settings.elite?.length ? 'your tagged teams' : 'top 8 by remaining projected win%'} (edit in Settings). ${lowWeeks.length ? `Carnage candidates, where most elite teams are already burned: <b>weeks ${lowWeeks.join(', ')}</b> — save a safe team for those.` : 'No week yet where most elite teams are burned.'}</div>
+    <div class="heatwrap"><div class="heat" style="grid-template-columns:auto repeat(${weeks.length},minmax(30px,1fr))"><div class="t"></div>${weeks.map((w) => `<div class="c" style="background:none;color:var(--muted)">${w}</div>`).join('')}`;
+  for (const t of elite) { html += `<div class="t">${esc(t)}</div>`; for (const w of weeks) { const v = L.avail[t]?.[w] ?? 0; const f = rivals ? v / rivals : 0; html += `<div class="c" style="background:hsl(140 ${Math.round(15 + f * 55)}% ${Math.round(28 + f * 50)}%)" title="W${w} ${esc(t)}: ~${Math.round(v)} of ${rivals}">${Math.round(v)}</div>`; } }
+  html += `</div></div></div>`;
+  // Rival inventory
+  const inv = P.inventory; const blocked = inv.filter((x) => !x.held.length).length;
+  html += `<div class="card"><h2>Rival inventory</h2><div class="note" style="margin-bottom:6px">Alive rivals by how many elite teams they still hold. ${blocked} of ${inv.length} are blocked (hold none).</div><div class="heatwrap"><table><tr><th>Entry</th><th class="n">Held</th><th>Elite teams left</th>${P.chalk ? '<th class="n">Chalk</th>' : ''}</tr>`;
+  for (const x of inv.slice(0, state.invAll ? inv.length : 40)) html += `<tr><td>${esc(x.name)}</td><td class="n">${x.held.length}</td><td class="note">${x.held.length ? esc(x.held.join(' ')) : '<span style="color:var(--warn)">blocked</span>'}</td>${P.chalk ? `<td class="n">${P.chalk[x.name]?.rate == null ? '—' : pct(P.chalk[x.name].rate)}</td>` : ''}</tr>`;
+  html += `</table></div>${inv.length > 40 && !state.invAll ? `<button class="btn" id="invMore" style="margin-top:8px">Show all ${inv.length}</button>` : ''}</div>`;
+  $('#v-pool').innerHTML = html; bindSg();
+  $('#v-pool').querySelectorAll('th.s').forEach((h) => h.onclick = () => { state.sort = h.dataset.s; renderPool(); });
+  const cfEl = $('#cf'); if (cfEl) { cfEl.oninput = () => { $('#cfVal').textContent = (+cfEl.value).toFixed(2); }; cfEl.onchange = () => { state.chalk = +cfEl.value; renderPool(); }; }
+  const cfSave = $('#cfSave'); if (cfSave) cfSave.onclick = async () => { try { await api('/api/settings', { chalkFactor: state.chalk }); toast('Chalk factor saved'); await load(); } catch (e) { toast(e.message); } };
+  const more = $('#invMore'); if (more) more.onclick = () => { state.invAll = true; renderPool(); };
+}
+function bindSg() {
+  const d = state.data; const out = $('#sgOut');
+  const ta = $('#sgText'); if (state.sgDraft) ta.value = state.sgDraft; ta.oninput = () => { state.sgDraft = ta.value; };
+  $('#sgPreview').onclick = async () => {
+    try { const r = await api('/api/sg', { season: d.season, week: d.week, text: ta.value, preview: true });
+      out.innerHTML = `<div class="note" style="margin-top:8px">${r.rows.length} teams parsed${r.unknown.length ? ` · <span style="color:var(--warn)">unreadable: ${esc(r.unknown.slice(0, 3).join(' | '))}</span>` : ''}${r.skipped ? ` · ${r.skipped} lines skipped` : ''}</div><div class="heatwrap"><table><tr><th>Team</th><th class="n">W%</th><th class="n">P%</th></tr>${r.rows.map((x) => `<tr><td>${esc(x.team)}</td><td class="n">${x.winProb == null ? '—' : pct(x.winProb)}</td><td class="n">${pct(x.consensusPct)}</td></tr>`).join('')}</table></div>`; }
+    catch (e) { out.innerHTML = `<div class="note" style="color:var(--bad);margin-top:8px">${esc(e.message)}</div>`; }
+  };
+  $('#sgSave').onclick = async () => {
+    try { const r = await api('/api/sg', { season: d.season, week: d.week, text: ta.value, source: 'SurvivorGrid' }); state.sgDraft = ''; toast(`Saved ${r.teams} teams for week ${d.week}${r.unknown.length ? ` · ${r.unknown.length} unreadable lines` : ''}`); await load(); }
+    catch (e) { toast('Import failed: ' + e.message); }
+  };
+  const clr = $('#sgClear'); if (clr) clr.onclick = async () => { try { await api('/api/sg', { season: d.season, week: d.week, clear: true }); toast('Cleared'); await load(); } catch (e) { toast(e.message); } };
 }
 
 /* ---------- Season view ---------- */
@@ -150,6 +217,12 @@ function renderSettings() {
     <label class="f">Deadline hour<select id="rHour">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${h === s.reminderHour ? 'selected' : ''}>${h === 0 ? '12 AM' : h < 12 ? h + ' AM' : h === 12 ? '12 PM' : h - 12 + ' PM'}</option>`).join('')}</select></label>
     <label class="f">Time zone<input id="rTz" value="${esc(s.reminderTz)}"></label>
     <button class="btn primary" id="saveS">Save</button></div>
+    <div class="card"><h2>Pool projection</h2>
+    <div class="note" style="margin-bottom:8px">Your own entry is excluded from the rival count. Behaviour tuning raises the chalk factor for rivals who usually take the biggest favorite they still hold and lowers it for contrarians (needs 3+ recorded weeks).</div>
+    <label class="f">My entry name (as it appears in the workbook)<input id="myEntry" list="entryNames" value="${esc(s.myEntry || '')}" placeholder="Last, First #1"><datalist id="entryNames">${(d.pool?.projected?.inventory || []).map((x) => `<option value="${esc(x.name)}">`).join('')}</datalist></label>
+    <label class="f"><input type="checkbox" id="behaviour" style="width:auto" ${s.behaviour ? 'checked' : ''}> Per-rival behaviour tuning (chalk hit rate)</label>
+    <label class="f">Elite teams for the lookahead (blank = top 8 by projected win%)<input id="elite" value="${esc((s.elite || []).join(' '))}" placeholder="KC BUF DET PHI BAL"></label>
+    <button class="btn primary" id="savePool">Save</button></div>
     <div class="card"><h2>Push notifications</h2>
     <div class="note" style="margin-bottom:8px">Status: ${supported ? `permission ${perm}` : 'not supported in this browser'} · ${d.pushSubscribed} device(s) subscribed${!standalone && /iPhone|iPad/.test(navigator.userAgent) ? '<br><b>iPhone:</b> tap Share → Add to Home Screen first, then open from the icon to enable push.' : ''}</div>
     <button class="btn primary" id="subBtn" ${!supported ? 'disabled' : ''}>Enable on this device</button> <button class="btn" id="testBtn">Send test</button></div>
@@ -158,6 +231,8 @@ function renderSettings() {
     <input type="file" id="poolFile" accept=".xlsx" style="display:none"><button class="btn primary" id="poolBtn">Upload workbook</button></div>
     <div class="card"><h2>About the model</h2><div class="note">Win probability = 75% vig-free sportsbook moneyline (DraftKings via ESPN; nflverse closing lines as fallback) + 25% Elo (1999–present, margin-of-victory, home field, rest). Injuries from ESPN nudge the number slightly since lines already price most news. The season planner maximizes the product of weekly win probabilities across remaining weeks without reusing teams, so it will tell you to save elite teams for the weeks when nothing else is safe.</div></div>`;
   $('#saveS').onclick = async () => { try { await api('/api/settings', { reminderDay: +$('#rDay').value, reminderHour: +$('#rHour').value, reminderTz: $('#rTz').value.trim() }); toast('Saved'); load(); } catch (e) { toast(e.message); } };
+  $('#savePool').onclick = async () => { const elite = $('#elite').value.toUpperCase().split(/[\s,]+/).filter(Boolean); if (elite.some((t) => !/^[A-Z]{2,3}$/.test(t))) return toast('Elite teams must be codes like KC');
+    try { await api('/api/settings', { myEntry: $('#myEntry').value.trim(), behaviour: $('#behaviour').checked, elite }); toast('Saved'); load(); } catch (e) { toast(e.message); } };
   $('#subBtn').onclick = async () => {
     try { const reg = await navigator.serviceWorker.ready; const p = await Notification.requestPermission(); if (p !== 'granted') return toast('Permission denied');
       const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64(d.vapidPublicKey) });
