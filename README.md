@@ -2,7 +2,7 @@
 
 Single-user PWA for NFL survivor pool picks: tracks picks, pushes reminders before the Saturday-noon deadline, and ranks each week's teams with an analysis blend.
 
-**Live:** https://openclaw-server.tailbd9828.ts.net:8446 (tailnet only). On iPhone: Safari → Share → Add to Home Screen, open from the icon, then Settings → Enable on this device for push reminders.
+**Live:** On iPhone: Safari → Share → Add to Home Screen, open from the icon, then Settings → Enable on this device for push reminders.
 
 ## Run
 ```
