@@ -5,6 +5,7 @@ import webpush from 'web-push';
 import * as nfl from './lib/nfl.js';
 import * as model from './lib/model.js';
 import * as store from './lib/store.js';
+import * as pool from './lib/pool.js';
 
 const PORT = +(process.env.PORT || 3910);
 const PUB = path.resolve('public');
@@ -30,12 +31,21 @@ async function analyze(season, week, force = false) {
   const picks = store.get().picks[season] || {};
   const usedBefore = Object.entries(picks).filter(([w]) => +w !== week).map(([, p]) => p.team);
   const rows = model.rateWeek({ espnGames, nvGames: games, elo, injuries, season, week, used: usedBefore, remainingWeeks: projection });
+  // Pool: other entries' pick history -> alive count, forecast crowd, leverage. Nudges the survivor score.
+  const poolDoc = pool.load(); let poolInfo = null;
+  if (poolDoc?.season === season && poolDoc.entries?.length) {
+    const fit = model.fitCrowdK(poolDoc.entries, projection, week);
+    poolInfo = model.poolAnalysis({ entries: poolDoc.entries, projection, week, rows, k: fit.k });
+    poolInfo.fit = fit; poolInfo.importedAt = poolDoc.importedAt; poolInfo.fileName = poolDoc.fileName; poolInfo.unknown = poolDoc.unknown;
+    for (const r of rows) { r.crowd = poolInfo.share[r.team] ?? 0; r.leverage = poolInfo.leverage[r.team] ?? 1; r.poolScore = r.prob * r.leverage; r.survivor += (r.leverage - 1) * r.prob * 0.5; if (r.crowd >= 0.25) r.flags.push('crowd pick'); else if (r.leverage >= 1.05 && r.prob >= 0.6) r.flags.push('contrarian edge'); }
+    rows.sort((a, b) => b.survivor - a.survivor);
+  }
   const usedThrough = Object.entries(picks).filter(([w]) => +w < week).map(([, p]) => p.team);
   const plan = model.planSeason(projection, usedThrough, week);
   // Team trend series (Elo over the last 2 seasons)
   const trends = {};
   for (const t of Object.keys(teams)) trends[t] = (elo.history[t] || []).filter((h) => h.season >= season - 1).map((h) => ({ s: h.season, w: h.week, e: Math.round(h.elo) }));
-  const value = { season, week, rows, plan, projection, trends, calibration: model.calibration(games), teams, ratings: elo.ratings, generatedAt: new Date().toISOString(),
+  const value = { season, week, rows, plan, pool: poolInfo, projection, trends, calibration: model.calibration(games), teams, ratings: elo.ratings, generatedAt: new Date().toISOString(),
     sources: ['ESPN scoreboard (DraftKings lines, records, status)', 'ESPN injuries', 'nflverse games.csv (1999-present results, closing lines, rest days)'] };
   analysisCache = { at: Date.now(), key, value };
   return value;
@@ -148,6 +158,18 @@ http.createServer(async (req, res) => {
         if (typeof b.reminderTz === 'string' && b.reminderTz.length < 64) { try { new Date().toLocaleString('en-US', { timeZone: b.reminderTz }); s.settings.reminderTz = b.reminderTz; } catch {} }
       });
       return json(res, 200, store.get().settings);
+    }
+    if (url.pathname === '/api/pool' && req.method === 'POST') {
+      const chunks = []; let n = 0;
+      const cl = +req.headers['content-length'] || 0; if (cl > 8e6) { json(res, 413, { error: 'workbook too large (8 MB max)' }); req.destroy(); return; }
+      await new Promise((ok, bad) => { req.on('data', (c) => { n += c.length; if (n > 8e6) { bad(new Error('too large')); req.destroy(); } else chunks.push(c); }); req.on('end', ok); req.on('error', bad); });
+      const cur = await nfl.currentWeek(); const season = +(url.searchParams.get('season') || cur.season);
+      const teams = await nfl.loadTeams();
+      let parsed; try { parsed = pool.parseWorkbook(Buffer.concat(chunks), teams); } catch (e) { return json(res, 400, { error: `Could not read workbook: ${e.message}` }); }
+      const fileName = decodeURIComponent(url.searchParams.get('name') || '').slice(0, 120);
+      const doc = pool.save(parsed, { season, fileName });
+      analysisCache.at = 0;
+      return json(res, 200, { entries: doc.entries.length, weeks: doc.weeks.filter((w) => doc.entries.some((e) => e.picks[w])), unknown: doc.unknown });
     }
     if (url.pathname === '/api/test-push' && req.method === 'POST') {
       const sent = await sendPush({ title: 'Survivor reminders are on', body: 'You will be nudged Saturday before noon if you have not picked.', url: '/', tag: 'survivor-test' });

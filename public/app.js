@@ -36,19 +36,26 @@ function renderPick() {
   let html = `<div class="card"><div class="deadline"><div><div class="big">${myPick ? `${esc(myPick.team)} locked` : 'No pick yet'}</div><div class="sub">${dl ? `Pick by ${dl.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${cd}` : ''}</div></div>
     ${myPick ? `<span class="pill ${myPick.result === 'win' ? 'good' : myPick.result === 'loss' ? 'bad' : 'info'}">${myPick.result ? myPick.result.toUpperCase() + (myPick.score ? ' ' + myPick.score : '') : 'PENDING'}</span>` : `<span class="pill warn">OPEN</span>`}</div>
     ${d.plan?.plan?.length ? `<div class="note" style="margin-top:8px">Season plan suggests <b>${esc(d.plan.plan[0].team || '—')}</b> this week · projected survival to W18 ${pct(d.plan.survival)}</div>` : ''}</div>`;
+  if (d.pool) {
+    const P = d.pool; const hist = P.history[d.week - 1];
+    const top = Object.entries(P.share).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([t, v]) => `${esc(t)} ${pct(v)}`).join(' · ');
+    const last = hist ? Object.entries(hist.teams).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([t, n]) => `${esc(t)} ${Math.round(n / hist.n * 100)}%`).join(' · ') : null;
+    html += `<div class="card"><h2>Pool · ${P.alive} of ${P.total} entries alive</h2>
+      <div class="note">Forecast crowd this week: <b>${top || '—'}</b>${last ? `<br>Last week actual: ${last}` : ''}<br>Crowd model ${P.fit?.fitted ? `fitted to ${P.fit.n} past picks (k=${P.k})` : 'default (no past picks yet)'} · imported ${new Date(P.importedAt).toLocaleDateString()}${P.unknown?.length ? ` · <span style="color:var(--warn)">unrecognized: ${esc(P.unknown.slice(0, 5).join(', '))}</span>` : ''}</div></div>`;
+  }
   html += `<div class="chips">${[['all', 'All'], ['avail', 'Available'], ['fav', 'Favorites ≥60%'], ['home', 'Home']].map(([k, l]) => `<button data-f="${k}" class="${state.filter === k ? 'on' : ''}">${l}</button>`).join('')}</div><div class="card" id="rows">`;
   for (const r of rows) {
     if (seen.has(r.espn + r.team)) continue; seen.add(r.espn + r.team);
     const t = d.teams[r.team] || {}; const isPick = myPick?.team === r.team;
     const gd = new Date(r.date);
-    const flags = r.flags.map((f) => `<span class="pill ${f === 'heavy favorite' ? 'good' : /injur|disadvantage|save/.test(f) ? 'warn' : /road|division/.test(f) ? '' : 'info'}">${esc(f)}</span>`).join('');
+    const flags = r.flags.map((f) => `<span class="pill ${f === 'heavy favorite' || f === 'contrarian edge' ? 'good' : /injur|disadvantage|save|crowd/.test(f) ? 'warn' : /road|division/.test(f) ? '' : 'info'}">${esc(f)}</span>`).join('');
     html += `<div class="row ${r.used ? 'used' : ''}" data-k="${esc(r.espn + r.team)}">
       <img src="${esc(t.logo || '')}" alt="" loading="lazy">
       <div class="body"><div class="title">${esc(r.team)} <small>${r.neutral ? 'vs' : r.home ? 'vs' : '@'} ${esc(r.opp)} · ${gd.toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}</small></div>
       <div class="meta">${r.spread != null ? (r.spread < 0 ? `${esc(r.team)} ${r.spread}` : `${esc(r.opp)} ${-r.spread}`) : 'no line'} · ${r.ml != null ? (r.ml > 0 ? '+' : '') + r.ml : ''} · Elo ${r.eloRating} vs ${r.oppElo}${r.form ? ` · form ${r.form}` : ''}${r.score ? ` · <b>${r.won ? 'W' : r.won === false ? 'L' : ''} ${r.score}</b>` : ''}</div>
       <div>${r.used ? '<span class="pill">already used</span>' : flags}</div>
       <div class="bar"><i style="width:${Math.round(r.prob * 100)}%"></i></div></div>
-      <div class="prob"><b>${pct(r.prob)}</b><span>win</span></div>
+      <div class="prob"><b>${pct(r.prob)}</b><span>${r.crowd != null ? `crowd ${pct(r.crowd)}` : 'win'}</span></div>
       <button class="pick ${isPick ? 'on' : ''}" data-team="${esc(r.team)}" ${r.used ? 'disabled' : ''}>${isPick ? 'Picked' : 'Pick'}</button></div>`;
     if (state.open === r.espn + r.team) {
       html += `<div class="detail"><b>Why ${pct(r.prob)}</b><dl>
@@ -56,12 +63,13 @@ function renderPick() {
         <dt>Elo model</dt><dd>${pct(r.elo)} (${r.eloRating} vs ${r.oppElo}${r.home && !r.neutral ? ', +HFA' : ''})</dd>
         <dt>Rest</dt><dd>${r.rest ?? '?'} days vs ${r.oppRest ?? '?'}</dd>
         <dt>Injuries</dt><dd>${r.injuries.length ? esc(r.injuries.join('; ')) : 'none notable'}${r.injuryPenalty ? ` (−${(r.injuryPenalty * 100).toFixed(1)} pts raw)` : ''}</dd>
+        ${r.leverage != null ? `<dt>Pool</dt><dd>~${pct(r.crowd)} of alive entries expected here · leverage ${r.leverage.toFixed(2)}× (${r.leverage > 1.05 ? 'a win thins the field' : r.leverage < 0.95 ? 'riding with the crowd' : 'neutral'})</dd>` : ''}
         <dt>Future value</dt><dd>${r.futureStrong} more weeks ≥70% · best later spot ${pct(r.futureBest)}</dd>
         <dt>Record</dt><dd>${esc(r.record || '0-0')} ${r.broadcast ? '· ' + esc(r.broadcast) : ''}</dd></dl></div>`;
     }
   }
   html += rows.length ? '</div>' : '<div class="empty">No games match</div></div>';
-  html += `<div class="card"><h2>Sources</h2><div class="note">${d.sources.map(esc).join(' · ')}<br>Updated ${new Date(d.generatedAt).toLocaleTimeString()}. Win% = 75% market + 25% Elo, then injury and rest adjustments. Survivor score also discounts teams with better future weeks.</div></div>`;
+  html += `<div class="card"><h2>Sources</h2><div class="note">${d.sources.map(esc).join(' · ')}<br>Updated ${new Date(d.generatedAt).toLocaleTimeString()}. Win% = 75% market + 25% Elo, then injury and rest adjustments. Survivor score also discounts teams with better future weeks${d.pool ? " and nudges toward picks the rest of the pool is avoiding" : ""}.</div></div>`;
   $('#v-pick').innerHTML = html;
   $('#v-pick').querySelectorAll('.chips button').forEach((b) => b.onclick = () => { state.filter = b.dataset.f; renderPick(); });
   $('#v-pick').querySelectorAll('.row').forEach((row) => row.onclick = (e) => { if (e.target.closest('button')) return; state.open = state.open === row.dataset.k ? null : row.dataset.k; renderPick(); });
@@ -145,12 +153,22 @@ function renderSettings() {
     <div class="card"><h2>Push notifications</h2>
     <div class="note" style="margin-bottom:8px">Status: ${supported ? `permission ${perm}` : 'not supported in this browser'} · ${d.pushSubscribed} device(s) subscribed${!standalone && /iPhone|iPad/.test(navigator.userAgent) ? '<br><b>iPhone:</b> tap Share → Add to Home Screen first, then open from the icon to enable push.' : ''}</div>
     <button class="btn primary" id="subBtn" ${!supported ? 'disabled' : ''}>Enable on this device</button> <button class="btn" id="testBtn">Send test</button></div>
+    <div class="card"><h2>Pool spreadsheet</h2>
+    <div class="note" style="margin-bottom:8px">Upload the weekly "Knockout Pool" workbook. Past picks tell the model who is still alive and which teams each entry has burned, so it can forecast this week's crowd and favor picks that thin the field.${d.pool ? `<br>Current: ${esc(d.pool.fileName || 'workbook')} · ${d.pool.total} entries (${d.pool.paid} paid) · imported ${new Date(d.pool.importedAt).toLocaleString()}` : '<br>Nothing imported yet.'}</div>
+    <input type="file" id="poolFile" accept=".xlsx" style="display:none"><button class="btn primary" id="poolBtn">Upload workbook</button></div>
     <div class="card"><h2>About the model</h2><div class="note">Win probability = 75% vig-free sportsbook moneyline (DraftKings via ESPN; nflverse closing lines as fallback) + 25% Elo (1999–present, margin-of-victory, home field, rest). Injuries from ESPN nudge the number slightly since lines already price most news. The season planner maximizes the product of weekly win probabilities across remaining weeks without reusing teams, so it will tell you to save elite teams for the weeks when nothing else is safe.</div></div>`;
   $('#saveS').onclick = async () => { try { await api('/api/settings', { reminderDay: +$('#rDay').value, reminderHour: +$('#rHour').value, reminderTz: $('#rTz').value.trim() }); toast('Saved'); load(); } catch (e) { toast(e.message); } };
   $('#subBtn').onclick = async () => {
     try { const reg = await navigator.serviceWorker.ready; const p = await Notification.requestPermission(); if (p !== 'granted') return toast('Permission denied');
       const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64(d.vapidPublicKey) });
       await api('/api/subscribe', sub.toJSON()); toast('Reminders enabled'); load(); } catch (e) { toast('Subscribe failed: ' + e.message); } };
+  $('#poolBtn').onclick = () => $('#poolFile').click();
+  $('#poolFile').onchange = async () => {
+    const f = $('#poolFile').files[0]; if (!f) return; toast('Uploading…');
+    try { const r = await fetch(`/api/pool?season=${d.season}&name=${encodeURIComponent(f.name)}`, { method: 'POST', body: f }); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.statusText);
+      toast(`Imported ${j.entries} entries · weeks with picks: ${j.weeks.join(', ') || 'none'}${j.unknown.length ? ` · unrecognized: ${j.unknown.slice(0, 3).join(', ')}` : ''}`); await load(); }
+    catch (e) { toast('Import failed: ' + e.message); } finally { $('#poolFile').value = ''; }
+  };
   $('#testBtn').onclick = async () => { try { const r = await api('/api/test-push', {}); toast(`Sent to ${r.sent} device(s)`); } catch (e) { toast(e.message); } };
 }
 function b64(s) { const p = '='.repeat((4 - (s.length % 4)) % 4); const b = atob((s + p).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(b, (c) => c.charCodeAt(0)); }
