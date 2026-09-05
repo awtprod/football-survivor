@@ -15,6 +15,7 @@ State lives in `data/store.json` (picks, push subscriptions, settings). Data cac
 - ESPN scoreboard: schedule, DraftKings moneyline/spread, records, live status
 - ESPN injuries: per-team report with status
 - nflverse `games.csv`: every game since 1999 with results, closing lines, rest days, division flag
+- SurvivorGrid (`lib/survivorgrid.js`): scraped, not an API — the grid page server-renders an inline `gridData` object plus one table row per team, giving market win% and pick share from four pools (PoolCrunch `projected`, ESPN, Yahoo, USA Football Pools). URL is `/{season}/{week}`; `robots.txt` disallows nothing. Cached 3h. A layout change throws (team count and pick-share sum are checked) rather than poisoning the model, and falls back to the last good cache.
 
 ## Model (`lib/model.js`)
 - Elo from full history: margin-of-victory multiplier, home field (+48), rest days, one-third regression each offseason
@@ -29,7 +30,7 @@ Settings → Upload workbook takes the weekly "Knockout Pool" xlsx (column A ent
 
 ## Pool tab: projected pick distribution (`public/crowd.js`, shared by server and client)
 All of this is an estimate of other people's behaviour and is labelled as such in the UI.
-- **SurvivorGrid import**: paste the grid or a CSV (`team, winProb, consensusPct`) per week. Win% accepts `81%`, `0.81` or a moneyline (`-571`); pick share accepts `29%` or `0.29`. Preview, then save; stored in `data/store.json` under `sg[season][week]`. Teams left out get a 0.5% floor. Without a paste the prior is the softmax over win probability (steepness fitted to the pool's past picks).
+- **SurvivorGrid import**: **Fetch from SurvivorGrid** scrapes the current week directly (no paste, no key); the 5-minute server tick also keeps the current week fresh on its own. An auto-import is refreshed in place, but a manual paste is never overwritten by the tick — only by clicking Fetch. Teams on bye contribute no prior and are reported separately from unrecognized ones. Set `settings.sgProvider` to `espn`, `yahoo` or `usa-football-pools` to store that pool's pick share instead of the blended default. Pasting still works: paste the grid or a CSV (`team, winProb, consensusPct`) per week. Win% accepts `81%`, `0.81` or a moneyline (`-571`); pick share accepts `29%` or `0.29`. Preview, then save; stored in `data/store.json` under `sg[season][week]`. Teams left out get a 0.5% floor. Without a paste the prior is the softmax over win probability (steepness fitted to the pool's past picks).
 - **Projection**: for each alive rival (your own entry, named in Settings, is excluded) `prior(t) = consensus(t)^chalkFactor`, zeroed for teams they have burned, renormalised. Pool P% is the average over rivals. The chalk slider recomputes live in the browser; "Save as default" persists it. Optional behaviour tuning maps each rival's chalk hit rate (did they take the biggest favourite they still held?) to a per-rival factor.
 - **EV** = win% × (rivals surviving on a neutral pick ÷ rivals surviving if this team wins); rivals on your team survive, rivals on your opponent are eliminated, others survive at their own rate. **Lev** is that ratio normalised so 1 is average; the survivor score adds `(lev − 1) × win% × 0.5`. **Avail #** = alive rivals who can still take the team.
 - **Lookahead**: expected number of rivals still holding each elite team (tagged in Settings, else top 8 by remaining projected win%) entering each future week, thinning rivals by projected picks and losses. Weeks where most elite teams are burned are flagged as carnage candidates.
@@ -46,7 +47,7 @@ Server checks every 5 minutes. If the current week has no pick, it sends web-pus
 
 ## Test
 ```
-node --test test/crowd-test.mjs test/portfolio-test.mjs   # projection, EV, parser, lookahead, joint-EV portfolio unit tests
+node --test test/crowd-test.mjs test/portfolio-test.mjs test/survivorgrid-test.mjs   # projection, EV, parser, lookahead, joint-EV portfolio, SurvivorGrid scrape parser
 node test/ui-test.mjs     # headless Chrome walkthrough: picks, filters, season, trends, push, offline
 BASE=http://127.0.0.1:3910 node test/pool-ui-test.mjs   # Pool tab: paste preview, chalk slider, sorting
 BASE=http://127.0.0.1:3911 node test/portfolio-ui-test.mjs   # two configured entries: per-entry picks, portfolio table, λ slider, season paths (picks week 1 then clears)

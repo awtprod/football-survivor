@@ -109,9 +109,9 @@ function livePortfolio(P) {
 function renderPool() {
   const d = state.data; const P = liveProjection(); const sgRows = d.sg ? Object.keys(d.sg.data).length : 0;
   let html = `<div class="card"><h2>SurvivorGrid data · week ${d.week}</h2>
-    <div class="note">Paste the SurvivorGrid grid (or a CSV: <code>team, winProb, consensusPct</code>). Win% accepts 81%, 0.81 or a moneyline like −571; pick share accepts 29% or 0.29. Teams you leave out get a 0.5% floor.${d.sg ? `<br>Saved: ${sgRows} teams${d.sg.source ? ` from ${esc(d.sg.source)}` : ''} · ${new Date(d.sg.importedAt).toLocaleString()}` : '<br>Nothing saved for this week yet; the projection prior falls back to the win-prob softmax.'}</div>
+    <div class="note">Paste the SurvivorGrid grid (or a CSV: <code>team, winProb, consensusPct</code>) — or just hit Fetch to scrape it. Win% accepts 81%, 0.81 or a moneyline like −571; pick share accepts 29% or 0.29. Teams you leave out get a 0.5% floor.${d.sg ? `<br>Saved: ${sgRows} teams${d.sg.source ? ` from ${esc(d.sg.source)}` : ''} · ${new Date(d.sg.importedAt).toLocaleString()}` : '<br>Nothing saved for this week yet; the projection prior falls back to the win-prob softmax.'}</div>
     <textarea class="paste" id="sgText" placeholder="LAC, 0.81, 0.29&#10;JAX, 74%, 21%&#10;DET, -571, 16%"></textarea>
-    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn" id="sgPreview">Preview</button><button class="btn primary" id="sgSave">Save week ${d.week}</button>${d.sg ? '<button class="btn" id="sgClear">Clear</button>' : ''}</div><div id="sgOut"></div></div>`;
+    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn primary" id="sgFetch">Fetch from SurvivorGrid</button><button class="btn" id="sgPreview">Preview</button><button class="btn" id="sgSave">Save pasted</button>${d.sg ? '<button class="btn" id="sgClear">Clear</button>' : ''}</div><div id="sgOut"></div></div>`;
   if (!d.pool) { html += `<div class="card"><div class="empty">Upload the pool workbook in Settings to project your rivals' picks.</div></div>`; $('#v-pool').innerHTML = html; bindSg(); return; }
   const rivals = P.rivals; const cf = P.chalkFactor;
   html += `<div class="card"><h2>Projected pool picks <span class="est">estimate</span></h2>
@@ -185,6 +185,14 @@ function bindSg() {
   $('#sgSave').onclick = async () => {
     try { const r = await api('/api/sg', { season: d.season, week: d.week, text: ta.value, source: 'SurvivorGrid' }); state.sgDraft = ''; toast(`Saved ${r.teams} teams for week ${d.week}${r.unknown.length ? ` · ${r.unknown.length} unreadable lines` : ''}`); await load(); }
     catch (e) { toast('Import failed: ' + e.message); }
+  };
+  $('#sgFetch').onclick = async (e) => {
+    const b = e.target; b.disabled = true; const label = b.textContent; b.textContent = 'Fetching…';
+    try {
+      const r = await api('/api/sg/fetch', { season: d.season, week: d.week });
+      toast(`Imported ${r.teams} teams for week ${d.week}${r.byes.length ? ` · ${r.byes.length} on bye` : ''}`);
+      await load();
+    } catch (err) { toast(err.message); b.disabled = false; b.textContent = label; }
   };
   const clr = $('#sgClear'); if (clr) clr.onclick = async () => { try { await api('/api/sg', { season: d.season, week: d.week, clear: true }); toast('Cleared'); await load(); } catch (e) { toast(e.message); } };
 }

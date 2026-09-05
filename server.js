@@ -6,6 +6,7 @@ import * as nfl from './lib/nfl.js';
 import * as model from './lib/model.js';
 import * as store from './lib/store.js';
 import * as pool from './lib/pool.js';
+import * as sgrid from './lib/survivorgrid.js';
 import * as crowd from './public/crowd.js';
 
 const PORT = +(process.env.PORT || 3910);
@@ -160,6 +161,24 @@ async function sendPush(payload) {
   return sent;
 }
 
+/**
+ * Scrape SurvivorGrid for a week and store it in the same shape a manual paste produces.
+ * `force` bypasses the disk cache TTL. Returns the saved doc, or null if nothing usable.
+ */
+async function refreshSg(season, week, { force = false, provider } = {}) {
+  const toCode = pool.aliasMap(await nfl.loadTeams());
+  const settings = store.get().settings || {};
+  const p = await sgrid.fetchWeek(season, week, toCode, {
+    ttlMs: force ? 0 : 3 * 3600e3,
+    provider: provider || settings.sgProvider || 'projected',
+  });
+  if (!p.rows.length) return null;
+  const doc = { data: p.data, importedAt: new Date().toISOString(), source: 'SurvivorGrid (auto)' };
+  store.save((s) => { s.sg ??= {}; s.sg[season] ??= {}; s.sg[season][week] = doc; });
+  analysisCache.at = 0;
+  return { doc, parsed: p };
+}
+
 async function reminderTick() {
   try {
     const { season, week } = await nfl.currentWeek();
@@ -180,6 +199,15 @@ async function reminderTick() {
         await sendPush({ title: `Survivor: Week ${week} pick${missing.length > 1 ? `s (${missing.length} entries)` : ''} due ${when}`, body: top ? `Top suggestion: ${top.team} vs ${top.opp} (${Math.round(top.prob * 100)}%)` : 'Open the app to lock your pick.', url: '/', tag: `survivor-w${week}` });
         console.log(`[reminder] sent week ${week} lead ${lead}h`);
       }
+    }
+    // Keep this week's SurvivorGrid prior fresh. Auto-imports are refreshed every 3h;
+    // a manual paste is never overwritten.
+    const cur = store.get().sg?.[season]?.[week];
+    if (!cur || cur.source === 'SurvivorGrid (auto)') {
+      try {
+        const r = await refreshSg(season, week);
+        if (r) console.log(`[sg] week ${week}: ${r.parsed.rows.length} teams${r.parsed.byes.length ? `, ${r.parsed.byes.length} on bye` : ''}`);
+      } catch (e) { console.warn('[sg] refresh failed', e.message); }
     }
     await gradePicks();
   } catch (e) { console.warn('[reminder] tick failed', e.message); }
@@ -253,6 +281,17 @@ http.createServer(async (req, res) => {
       const doc = pool.save(parsed, { season, fileName });
       analysisCache.at = 0;
       return json(res, 200, { entries: doc.entries.length, weeks: doc.weeks.filter((w) => doc.entries.some((e) => e.picks[w])), unknown: doc.unknown });
+    }
+    if (url.pathname === '/api/sg/fetch' && req.method === 'POST') {
+      const b = await body(req);
+      const cur = await nfl.currentWeek();
+      const season = Number.isInteger(b.season) ? b.season : cur.season;
+      const week = Number.isInteger(b.week) ? b.week : cur.week;
+      if (week < 1 || week > 18) return json(res, 400, { error: 'bad week' });
+      let r; try { r = await refreshSg(season, week, { force: true, provider: b.provider }); }
+      catch (e) { return json(res, 502, { error: `SurvivorGrid fetch failed: ${e.message}` }); }
+      if (!r) return json(res, 502, { error: 'SurvivorGrid returned no teams' });
+      return json(res, 200, { teams: r.parsed.rows.length, byes: r.parsed.byes, unknown: r.parsed.unknown, providers: r.parsed.providers, importedAt: r.doc.importedAt });
     }
     if (url.pathname === '/api/sg' && req.method === 'POST') {
       const b = await body(req);
