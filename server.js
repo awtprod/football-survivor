@@ -8,10 +8,15 @@ import * as store from './lib/store.js';
 import * as pool from './lib/pool.js';
 import * as sgrid from './lib/survivorgrid.js';
 import * as crowd from './public/crowd.js';
+import crypto from 'node:crypto';
+import * as cfg from './lib/config.js';
+import * as oauth from './lib/oauth.js';
+import * as session from './lib/session.js';
 
 const PORT = +(process.env.PORT || 3910);
 const PUB = path.resolve('public');
 const DATA_DIR = path.resolve(process.env.DATA_DIR || 'data');
+cfg.checkOrExit();
 
 // --- VAPID keys (generated once, persisted) ---
 const vapidFile = path.join(DATA_DIR, 'vapid.json');
@@ -220,9 +225,113 @@ const json = (res, code, obj) => { res.writeHead(code, { 'content-type': 'applic
 const body = (req) => new Promise((ok, bad) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e5) bad(new Error('too large')); }); req.on('end', () => { try { ok(b ? JSON.parse(b) : {}); } catch (e) { bad(e); } }); });
 const VALID_TEAM = /^[A-Z]{2,3}$/;
 
+// --- auth ---
+const esc = (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const parseCookies = (h) => Object.fromEntries(String(h || '').split(';').map((c) => {
+  const i = c.indexOf('='); if (i < 0) return null;
+  try { return [c.slice(0, i).trim(), decodeURIComponent(c.slice(i + 1).trim())]; } catch { return null; }
+}).filter(Boolean));
+// SameSite=Lax rather than Strict: Strict is not sent on the top-level navigation Google redirects
+// us back with, so the callback would never see its own cookie.
+const setCookie = (name, value, { maxAge, path = '/' } = {}) => `${name}=${encodeURIComponent(value)}; Path=${path}; HttpOnly; SameSite=Lax`
+  + (cfg.COOKIE_SECURE ? '; Secure' : '') + (maxAge != null ? `; Max-Age=${maxAge}` : '');
+const safeEqual = (a, b) => { const x = Buffer.from(String(a || '')), y = Buffer.from(String(b || '')); return x.length > 0 && x.length === y.length && crypto.timingSafeEqual(x, y); };
+const page = (title, msg, extra = '') => `<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><title>${title}</title>`
+  + `<style>body{font:16px/1.6 -apple-system,system-ui;margin:0;min-height:100vh;display:grid;place-items:center;background:#111;color:#eee;padding:24px}`
+  + `div{max-width:30rem;text-align:center}h1{font-size:20px}a{color:#0a84ff}</style><div><h1>${title}</h1><p>${msg}</p>${extra}</div>`;
+
+/** The signed-in user for this request, or null. */
+function sessionUser(req) {
+  if (cfg.AUTH_DISABLED) {
+    const email = req.headers['x-test-user'];
+    if (!email) return null;
+    return { uid: 'test:' + oauth.normalizeEmail(email), email: String(email), name: String(email).split('@')[0], picture: '' };
+  }
+  const sid = parseCookies(req.headers.cookie).sv_session;
+  const s = session.touch(sid);
+  if (!s) return null;
+  if (!cfg.isAllowed(s.email)) { session.destroy(sid); return null; } // revoked since they logged in
+  return s;
+}
+const publicUser = (u) => ({ email: u.email, name: u.name, picture: u.picture, isAdmin: cfg.isAdmin(u.email) });
+
+/** Lax cookies already stop cross-site form posts; this refuses them explicitly too. */
+function crossOrigin(req) {
+  if (cfg.AUTH_DISABLED || req.method === 'GET' || req.method === 'HEAD') return false;
+  const o = req.headers.origin;
+  return !!o && o !== cfg.PUBLIC_ORIGIN; // no Origin at all = a non-browser client (curl, tests)
+}
+
+async function authRoute(req, res, url) {
+  if (url.pathname === '/auth/login') {
+    if (cfg.AUTH_DISABLED) { res.writeHead(302, { location: '/' }); return res.end(); }
+    const verifier = oauth.randomToken(), state = oauth.randomToken(), nonce = oauth.randomToken();
+    let next = url.searchParams.get('next') || '/';
+    if (!next.startsWith('/') || next.startsWith('//')) next = '/'; // no open redirect
+    const stash = Buffer.from(JSON.stringify({ state, nonce, verifier, next })).toString('base64url');
+    // The whole in-flight auth state rides in the cookie, so there is no server-side pending map to
+    // keep or expire. Signing it would add nothing: anyone who can set this cookie can just log in.
+    res.writeHead(302, {
+      location: oauth.authUrl({ clientId: cfg.GOOGLE_CLIENT_ID, redirectUri: cfg.REDIRECT_URI, state, nonce, codeVerifier: verifier }),
+      'set-cookie': setCookie('sv_oauth', stash, { maxAge: 600, path: '/auth' }),
+    });
+    return res.end();
+  }
+
+  if (url.pathname === '/auth/callback') {
+    const clear = setCookie('sv_oauth', '', { maxAge: 0, path: '/auth' });
+    const deny = (code, title, msg) => {
+      res.writeHead(code, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'set-cookie': clear });
+      res.end(page(title, msg, '<p><a href="/auth/login">Try again</a></p>'));
+    };
+    const oerr = url.searchParams.get('error');
+    if (oerr) return deny(400, 'Sign-in cancelled', esc(oerr));
+    let stash = null;
+    try { stash = JSON.parse(Buffer.from(parseCookies(req.headers.cookie).sv_oauth || '', 'base64url').toString('utf8')); } catch { /* malformed or absent */ }
+    if (!stash?.state) return deny(400, 'Sign-in expired', 'That took too long, or the tab was reopened. Start again.');
+    if (!safeEqual(url.searchParams.get('state'), stash.state)) return deny(400, 'Sign-in could not be verified', 'The state parameter did not match.');
+    const code = url.searchParams.get('code');
+    if (!code) return deny(400, 'Sign-in failed', 'Google returned no authorization code.');
+
+    let claims;
+    try {
+      const tok = await oauth.exchangeCode({ code, codeVerifier: stash.verifier, clientId: cfg.GOOGLE_CLIENT_ID, clientSecret: cfg.GOOGLE_CLIENT_SECRET, redirectUri: cfg.REDIRECT_URI });
+      claims = await oauth.verifyIdToken(tok.id_token, { clientId: cfg.GOOGLE_CLIENT_ID, nonce: stash.nonce });
+    } catch (e) { console.warn('[auth] sign-in failed:', e.message); return deny(400, 'Sign-in failed', esc(e.message)); }
+
+    if (!cfg.isAllowed(claims.email)) {
+      console.warn(`[auth] refused ${claims.email} (sub ${claims.sub}) - not on the allowlist`);
+      return deny(403, 'Not on the list', `${esc(claims.email)} is not allowed to use this app. Ask the pool admin to add it, then try again.`);
+    }
+    const uid = 'g:' + claims.sub;
+    // Logged so that a friend signing in with the wrong Google account is diagnosable rather than
+    // just "my picks vanished".
+    console.log(`[auth] ${claims.email} -> ${uid}${cfg.isAdmin(claims.email) ? ' (admin)' : ''}`);
+    const sid = session.create({ uid, email: claims.email, name: claims.name, picture: claims.picture, ua: req.headers['user-agent'] });
+    res.writeHead(302, { location: stash.next || '/', 'set-cookie': [clear, setCookie('sv_session', sid, { maxAge: 30 * 86400 })] });
+    return res.end();
+  }
+
+  if (url.pathname === '/auth/logout' && req.method === 'POST') {
+    const sid = parseCookies(req.headers.cookie).sv_session;
+    if (sid) session.destroy(sid);
+    res.writeHead(204, { 'set-cookie': setCookie('sv_session', '', { maxAge: 0 }) });
+    return res.end();
+  }
+  res.writeHead(404); return res.end('not found');
+}
+
 http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   try {
+    if (url.pathname.startsWith('/auth/')) return await authRoute(req, res, url);
+    if (url.pathname === '/health') return json(res, 200, { ok: true, uptime: process.uptime() });
+    if (url.pathname.startsWith('/api/')) {
+      if (crossOrigin(req)) return json(res, 403, { error: 'cross-origin request refused' });
+      const me = sessionUser(req);
+      if (!me) return json(res, 401, { error: 'sign in required' });
+      if (url.pathname === '/api/me') return json(res, 200, { user: publicUser(me) });
+    }
     if (url.pathname === '/api/state') {
       const cur = await nfl.currentWeek();
       const season = +(url.searchParams.get('season') || cur.season);
@@ -311,7 +420,6 @@ http.createServer(async (req, res) => {
       const sent = await sendPush({ title: 'Survivor reminders are on', body: 'You will be nudged Saturday before noon if you have not picked.', url: '/', tag: 'survivor-test' });
       return json(res, 200, { sent });
     }
-    if (url.pathname === '/health') return json(res, 200, { ok: true, uptime: process.uptime() });
     // static
     let p = url.pathname === '/' ? '/index.html' : url.pathname;
     p = path.normalize(p).replace(/^(\.\.[/\\])+/, '');
