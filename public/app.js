@@ -10,12 +10,26 @@ const picksOf = (d, i) => d.entryPicks?.[i] || (i === 0 ? d.picks : {}) || {};
 const entryChips = (d, onPick) => entries(d).length > 1 ? `<div class="chips" id="entryChips">${entries(d).map((e, i) => `<button data-e="${i}" class="${state.entry === i ? 'on' : ''}" ${e.alive ? '' : 'style="text-decoration:line-through"'}>${esc(e.name)}</button>`).join('')}</div>` : '';
 const toast = (m) => { const t = $('#toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => (t.style.display = 'none'), 2600); };
 
+class AuthError extends Error { constructor(m) { super(m || 'sign in required'); this.name = 'AuthError'; } }
 async function api(path, body) {
-  const r = await fetch(path, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {});
+  const init = body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {};
+  const r = await fetch(path, { ...init, credentials: 'same-origin' });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || r.statusText);
+  // 401 is not an error to report, it is a state to render. 403 stays an ordinary failure: it means
+  // admin-only or a refused origin, not signed out.
+  if (r.status === 401) { showGate(); throw new AuthError(j.error); }
+  if (!r.ok) { const e = new Error(j.error || r.statusText); e.status = r.status; throw e; }
   return j;
 }
+/** Every catch site funnels through here: once the gate is up, further toasts are just noise. */
+const fail = (e, prefix = '') => { if (e.name !== 'AuthError') toast(prefix + e.message); };
+function showGate(msg) {
+  state.data = null;
+  const g = $('#gate'); if (!g) return;
+  $('#gateMsg').textContent = msg || 'Sign in to see your picks.';
+  document.body.classList.add('gated'); g.hidden = false;
+}
+function hideGate() { document.body.classList.remove('gated'); const g = $('#gate'); if (g) g.hidden = true; }
 async function load(refresh = false) {
   $('#hdr').textContent = 'Loading…';
   try {
@@ -23,12 +37,19 @@ async function load(refresh = false) {
     state.data = await api('/api/state?' + q);
     state.week = state.data.week; state.season = state.data.season;
     render();
-  } catch (e) { $('#hdr').textContent = 'Survivor'; toast('Load failed: ' + e.message); }
+  } catch (e) { $('#hdr').textContent = 'Survivor'; fail(e, 'Load failed: '); }
 }
 function render() {
-  const d = state.data; $('#hdr').textContent = `Survivor · ${d.season}`;
+  const d = state.data; if (!d) return;
+  hideGate();
+  $('#hdr').textContent = `Survivor · ${d.season}`;
   const sel = $('#weekSel'); sel.innerHTML = Array.from({ length: 18 }, (_, i) => `<option value="${i + 1}" ${i + 1 === d.week ? 'selected' : ''}>Week ${i + 1}</option>`).join('');
-  state.chalk = null; renderPick(); renderPool(); renderSeason(); renderTrends(); renderSettings();
+  state.chalk = null;
+  // Sequential calls meant a throw in one view silently killed every later one - including
+  // Settings, which owns Sign out and the workbook upload.
+  for (const f of [renderPick, renderPool, renderSeason, renderTrends, renderSettings]) {
+    try { f(); } catch (e) { console.error(f.name, e); }
+  }
 }
 
 /* ---------- Pick view ---------- */
@@ -84,7 +105,7 @@ function renderPick() {
   $('#v-pick').querySelectorAll('button.pick').forEach((b) => b.onclick = async () => {
     const team = b.dataset.team; const un = myPick?.team === team;
     try { const r = await api('/api/pick', { season: d.season, week: d.week, team: un ? null : team, entry: state.entry }); d.picks = r.picks; d.entryPicks = r.entryPicks; toast(un ? `Week ${d.week} pick cleared` : `${team} locked for week ${d.week}${entries(d).length > 1 ? ` (${me.name})` : ''}`); await load(); }
-    catch (e) { toast(e.message); }
+    catch (e) { fail(e); }
   });
 }
 
@@ -145,7 +166,7 @@ function renderPool() {
   $('#v-pool').querySelectorAll('th.s').forEach((h) => h.onclick = () => { state.sort = h.dataset.s; renderPool(); });
   const cfEl = $('#cf'); if (cfEl) { cfEl.oninput = () => { $('#cfVal').textContent = (+cfEl.value).toFixed(2); }; cfEl.onchange = () => { state.chalk = +cfEl.value; renderPool(); }; }
   const lamEl = $('#lam'); if (lamEl) { lamEl.oninput = () => { $('#lamVal').textContent = (+lamEl.value).toFixed(2); }; lamEl.onchange = () => { state.lambda = +lamEl.value; renderPool(); }; }
-  const cfSave = $('#cfSave'); if (cfSave) cfSave.onclick = async () => { try { await api('/api/settings', { chalkFactor: state.chalk ?? P.chalkFactor, lambda: state.lambda ?? P.lambda ?? 1 }); toast('Projection defaults saved'); await load(); } catch (e) { toast(e.message); } };
+  const cfSave = $('#cfSave'); if (cfSave) cfSave.onclick = async () => { try { await api('/api/settings', { chalkFactor: state.chalk ?? P.chalkFactor, lambda: state.lambda ?? P.lambda ?? 1 }); toast('Projection defaults saved'); await load(); } catch (e) { fail(e); } };
   $('#v-pool').querySelectorAll('#objChips button').forEach((b) => b.onclick = () => { state.objective = b.dataset.o; renderPool(); });
   const md = $('#mustDiffer'); if (md) md.onchange = () => { state.mustDiffer = md.checked; renderPool(); };
   const pfMore = $('#pfMore'); if (pfMore) pfMore.onclick = () => { state.pfAll = true; renderPool(); };
@@ -176,25 +197,25 @@ function renderPortfolio(P) {
 }
 function bindSg() {
   const d = state.data; const out = $('#sgOut');
-  const ta = $('#sgText'); if (state.sgDraft) ta.value = state.sgDraft; ta.oninput = () => { state.sgDraft = ta.value; };
-  $('#sgPreview').onclick = async () => {
+  const ta = $('#sgText'); if (!ta) return; if (state.sgDraft) ta.value = state.sgDraft; ta.oninput = () => { state.sgDraft = ta.value; };
+  const prev = $('#sgPreview'); if (prev) prev.onclick = async () => {
     try { const r = await api('/api/sg', { season: d.season, week: d.week, text: ta.value, preview: true });
       out.innerHTML = `<div class="note" style="margin-top:8px">${r.rows.length} teams parsed${r.unknown.length ? ` · <span style="color:var(--warn)">unreadable: ${esc(r.unknown.slice(0, 3).join(' | '))}</span>` : ''}${r.skipped ? ` · ${r.skipped} lines skipped` : ''}</div><div class="heatwrap"><table><tr><th>Team</th><th class="n">W%</th><th class="n">P%</th></tr>${r.rows.map((x) => `<tr><td>${esc(x.team)}</td><td class="n">${x.winProb == null ? '—' : pct(x.winProb)}</td><td class="n">${pct(x.consensusPct)}</td></tr>`).join('')}</table></div>`; }
     catch (e) { out.innerHTML = `<div class="note" style="color:var(--bad);margin-top:8px">${esc(e.message)}</div>`; }
   };
-  $('#sgSave').onclick = async () => {
+  const save = $('#sgSave'); if (save) save.onclick = async () => {
     try { const r = await api('/api/sg', { season: d.season, week: d.week, text: ta.value, source: 'SurvivorGrid' }); state.sgDraft = ''; toast(`Saved ${r.teams} teams for week ${d.week}${r.unknown.length ? ` · ${r.unknown.length} unreadable lines` : ''}`); await load(); }
-    catch (e) { toast('Import failed: ' + e.message); }
+    catch (e) { fail(e, 'Import failed: '); }
   };
-  $('#sgFetch').onclick = async (e) => {
+  const fetchBtn = $('#sgFetch'); if (fetchBtn) fetchBtn.onclick = async (e) => {
     const b = e.target; b.disabled = true; const label = b.textContent; b.textContent = 'Fetching…';
     try {
       const r = await api('/api/sg/fetch', { season: d.season, week: d.week });
       toast(`Imported ${r.teams} teams for week ${d.week}${r.byes.length ? ` · ${r.byes.length} on bye` : ''}`);
       await load();
-    } catch (err) { toast(err.message); b.disabled = false; b.textContent = label; }
+    } catch (err) { fail(err); b.disabled = false; b.textContent = label; }
   };
-  const clr = $('#sgClear'); if (clr) clr.onclick = async () => { try { await api('/api/sg', { season: d.season, week: d.week, clear: true }); toast('Cleared'); await load(); } catch (e) { toast(e.message); } };
+  const clr = $('#sgClear'); if (clr) clr.onclick = async () => { try { await api('/api/sg', { season: d.season, week: d.week, clear: true }); toast('Cleared'); await load(); } catch (e) { fail(e); } };
 }
 
 /* ---------- Season view ---------- */
@@ -284,23 +305,32 @@ function renderSettings() {
     <div class="card"><h2>Pool spreadsheet</h2>
     <div class="note" style="margin-bottom:8px">Upload the weekly "Knockout Pool" workbook. Past picks tell the model who is still alive and which teams each entry has burned, so it can forecast this week's crowd and favor picks that thin the field.${d.pool ? `<br>Current: ${esc(d.pool.fileName || 'workbook')} · ${d.pool.total} entries (${d.pool.paid} paid) · imported ${new Date(d.pool.importedAt).toLocaleString()}` : '<br>Nothing imported yet.'}</div>
     <input type="file" id="poolFile" accept=".xlsx" style="display:none"><button class="btn primary" id="poolBtn">Upload workbook</button></div>
+    ${d.user ? `<div class="card"><h2>Account</h2>
+    <div class="note" style="margin-bottom:8px">Signed in as ${esc(d.user.email)}${d.user.isAdmin ? ' · admin' : ''}</div>
+    <button class="btn" id="signOut">Sign out</button></div>` : ''}
     <div class="card"><h2>About the model</h2><div class="note">Win probability = 75% vig-free sportsbook moneyline (DraftKings via ESPN; nflverse closing lines as fallback) + 25% Elo (1999–present, margin-of-victory, home field, rest). Injuries from ESPN nudge the number slightly since lines already price most news. The season planner maximizes the product of weekly win probabilities across remaining weeks without reusing teams, so it will tell you to save elite teams for the weeks when nothing else is safe.</div></div>`;
-  $('#saveS').onclick = async () => { try { await api('/api/settings', { reminderDay: +$('#rDay').value, reminderHour: +$('#rHour').value, reminderTz: $('#rTz').value.trim() }); toast('Saved'); load(); } catch (e) { toast(e.message); } };
+  $('#saveS').onclick = async () => { try { await api('/api/settings', { reminderDay: +$('#rDay').value, reminderHour: +$('#rHour').value, reminderTz: $('#rTz').value.trim() }); toast('Saved'); load(); } catch (e) { fail(e); } };
   $('#savePool').onclick = async () => { const elite = $('#elite').value.toUpperCase().split(/[\s,]+/).filter(Boolean); if (elite.some((t) => !/^[A-Z]{2,3}$/.test(t))) return toast('Elite teams must be codes like KC');
     const myEntries = $('#myEntries').value.split(/\r?\n/).map((x) => x.trim()); while (myEntries.length > 1 && !myEntries[myEntries.length - 1]) myEntries.pop(); if (myEntries.length > 8) return toast('At most 8 entries');
-    try { await api('/api/settings', { myEntries, myEntry: myEntries[0] || '', behaviour: $('#behaviour').checked, elite, mustDiffer: $('#mustDifferS').checked }); state.entry = 0; toast('Saved'); load(); } catch (e) { toast(e.message); } };
+    try { await api('/api/settings', { myEntries, myEntry: myEntries[0] || '', behaviour: $('#behaviour').checked, elite, mustDiffer: $('#mustDifferS').checked }); state.entry = 0; toast('Saved'); load(); } catch (e) { fail(e); } };
   $('#subBtn').onclick = async () => {
     try { const reg = await navigator.serviceWorker.ready; const p = await Notification.requestPermission(); if (p !== 'granted') return toast('Permission denied');
       const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64(d.vapidPublicKey) });
-      await api('/api/subscribe', sub.toJSON()); toast('Reminders enabled'); load(); } catch (e) { toast('Subscribe failed: ' + e.message); } };
+      await api('/api/subscribe', sub.toJSON()); toast('Reminders enabled'); load(); } catch (e) { fail(e, 'Subscribe failed: '); } };
   $('#poolBtn').onclick = () => $('#poolFile').click();
   $('#poolFile').onchange = async () => {
     const f = $('#poolFile').files[0]; if (!f) return; toast('Uploading…');
-    try { const r = await fetch(`/api/pool?season=${d.season}&name=${encodeURIComponent(f.name)}`, { method: 'POST', body: f }); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.statusText);
+    try { const r = await fetch(`/api/pool?season=${d.season}&name=${encodeURIComponent(f.name)}`, { method: 'POST', body: f, credentials: 'same-origin' }); const j = await r.json().catch(() => ({}));
+      if (r.status === 401) { showGate(); throw new AuthError(j.error); }
+      if (!r.ok) throw new Error(j.error || r.statusText);
       toast(`Imported ${j.entries} entries · weeks with picks: ${j.weeks.join(', ') || 'none'}${j.unknown.length ? ` · unrecognized: ${j.unknown.slice(0, 3).join(', ')}` : ''}`); await load(); }
-    catch (e) { toast('Import failed: ' + e.message); } finally { $('#poolFile').value = ''; }
+    catch (e) { fail(e, 'Import failed: '); } finally { $('#poolFile').value = ''; }
   };
-  $('#testBtn').onclick = async () => { try { const r = await api('/api/test-push', {}); toast(`Sent to ${r.sent} device(s)`); } catch (e) { toast(e.message); } };
+  const so = $('#signOut'); if (so) so.onclick = async () => {
+    try { await fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' }); } catch { /* leaving anyway */ }
+    location.reload();
+  };
+  $('#testBtn').onclick = async () => { try { const r = await api('/api/test-push', {}); toast(`Sent to ${r.sent} device(s)`); } catch (e) { fail(e); } };
 }
 function b64(s) { const p = '='.repeat((4 - (s.length % 4)) % 4); const b = atob((s + p).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(b, (c) => c.charCodeAt(0)); }
 
@@ -311,4 +341,8 @@ $('#weekSel').onchange = (e) => { state.week = +e.target.value; load(); };
 $('#refresh').onclick = () => load(true);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
 setInterval(() => { if (state.view === 'pick' && state.data) renderPick(); }, 60e3);
+$('#gateRetry').onclick = () => location.reload();
+// Returning to an installed PWA after signing in elsewhere should heal itself rather than
+// stranding the user on the gate.
+document.addEventListener('visibilitychange', () => { if (!document.hidden && !state.data) load(); });
 load();

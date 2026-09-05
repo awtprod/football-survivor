@@ -326,9 +326,10 @@ http.createServer(async (req, res) => {
   try {
     if (url.pathname.startsWith('/auth/')) return await authRoute(req, res, url);
     if (url.pathname === '/health') return json(res, 200, { ok: true, uptime: process.uptime() });
+    let me = null;
     if (url.pathname.startsWith('/api/')) {
       if (crossOrigin(req)) return json(res, 403, { error: 'cross-origin request refused' });
-      const me = sessionUser(req);
+      me = sessionUser(req);
       if (!me) return json(res, 401, { error: 'sign in required' });
       if (url.pathname === '/api/me') return json(res, 200, { user: publicUser(me) });
     }
@@ -339,7 +340,7 @@ http.createServer(async (req, res) => {
       const a = await analyze(season, week, url.searchParams.has('refresh'));
       const st = store.get();
       const deadline = await deadlineFor(season, week, st.settings).catch(() => null);
-      return json(res, 200, { ...a, current: cur, picks: store.picksFor(season, 0), entryPicks: st.entryPicks[season] || {}, settings: st.settings, deadline, vapidPublicKey: vapid.publicKey, pushSubscribed: st.subscriptions.length });
+      return json(res, 200, { ...a, current: cur, picks: store.picksFor(season, 0), entryPicks: st.entryPicks[season] || {}, settings: st.settings, deadline, vapidPublicKey: vapid.publicKey, pushSubscribed: st.subscriptions.length, user: publicUser(me) });
     }
     if (url.pathname === '/api/pick' && req.method === 'POST') {
       const b = await body(req); const { season, week, team, note } = b; const entry = b.entry ?? 0;
