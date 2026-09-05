@@ -48,6 +48,12 @@ textarea.paste { width:100%; min-height:110px; background:var(--card2); color:va
 input[type=range] { width:100%; margin:8px 0 } .stat { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--ink2) } .stat b { color:var(--ink); font-size:15px; display:block }
 .est { display:inline-block; font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:var(--warn); border:1px solid var(--warn); border-radius:4px; padding:0 5px; margin-left:6px; vertical-align:2px }
 .empty { color:var(--muted); text-align:center; padding:24px 0 }
+.ovl { position:fixed; inset:0; z-index:30; background:#0009; backdrop-filter:blur(3px); display:flex; align-items:flex-end; justify-content:center; overflow-y:auto; padding: calc(16px + env(safe-area-inset-top)) 0 0 }
+.ovl .sheet { background:var(--card); border:1px solid var(--line); border-radius:16px 16px 0 0; padding:18px 16px calc(18px + env(safe-area-inset-bottom)); width:100%; max-width:520px; margin-top:auto }
+.ovl .sheet h2 { margin:0 0 6px; font-size:19px; letter-spacing:.2px }
+.ovl .sheet p.note { margin:0 0 12px } .ovl .sheet .chips { margin-bottom:2px }
+.onb-act { display:flex; gap:8px; justify-content:flex-end; margin-top:14px } .onb-act .btn { flex:0 0 auto }
+@media (min-width:560px) { .ovl { align-items:center; padding:16px } .ovl .sheet { border-radius:16px; margin:auto } }
 .chips { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px } .chips button { background:var(--card2); border:1px solid var(--line); color:var(--ink2); border-radius:999px; padding:5px 11px; font:inherit; font-size:12px } .chips button.on { border-color:var(--accent); color:var(--ink) }
 #gate { position:fixed; inset:0; z-index:60; display:grid; place-items:center; background:var(--bg,#0e0f12); padding:24px }
 #gate[hidden] { display:none }
