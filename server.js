@@ -18,7 +18,7 @@ const vapidFile = path.join(DATA_DIR, 'vapid.json');
 let vapid;
 if (existsSync(vapidFile)) vapid = JSON.parse(readFileSync(vapidFile, 'utf8'));
 else { vapid = webpush.generateVAPIDKeys(); writeFileSync(vapidFile, JSON.stringify(vapid)); }
-webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'https://openclaw-server.tailbd9828.ts.net:8446', vapid.publicKey, vapid.privateKey);
+webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'https://openclaw-server.tailbd9828.ts.net', vapid.publicKey, vapid.privateKey);
 
 // --- Analysis (cached in-memory, refreshed on demand) ---
 let analysisCache = { at: 0, key: '', value: null };
@@ -261,6 +261,7 @@ http.createServer(async (req, res) => {
         if (Array.isArray(b.myEntries) && b.myEntries.length <= 8 && b.myEntries.every((n) => typeof n === 'string')) { s.settings.myEntries = b.myEntries.map((n) => n.trim().slice(0, 80)); if (s.settings.myEntries.length) s.settings.myEntry = s.settings.myEntries[0]; }
         if (typeof b.lambda === 'number' && b.lambda >= 0 && b.lambda <= 1) s.settings.lambda = Math.round(b.lambda * 100) / 100;
         if (typeof b.mustDiffer === 'boolean') s.settings.mustDiffer = b.mustDiffer;
+        if (typeof b.sgProvider === 'string' && sgrid.PROVIDERS.includes(b.sgProvider)) s.settings.sgProvider = b.sgProvider;
         if (typeof b.behaviour === 'boolean') s.settings.behaviour = b.behaviour;
         if (Array.isArray(b.elite) && b.elite.length <= 16 && b.elite.every((t) => VALID_TEAM.test(t))) s.settings.elite = b.elite;
         if (b.entrantChalk && typeof b.entrantChalk === 'object' && !Array.isArray(b.entrantChalk)) {
