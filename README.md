@@ -47,7 +47,7 @@ Server checks every 5 minutes. If the current week has no pick, it sends web-pus
 
 ## Test
 ```
-node --test test/crowd-test.mjs test/portfolio-test.mjs test/survivorgrid-test.mjs   # projection, EV, parser, lookahead, joint-EV portfolio, SurvivorGrid scrape parser
+npm test   # projection, EV, parser, lookahead, joint-EV portfolio, SurvivorGrid scrape parser, ID-token verification
 node test/ui-test.mjs     # headless Chrome walkthrough: picks, filters, season, trends, push, offline
 BASE=http://127.0.0.1:3910 node test/pool-ui-test.mjs   # Pool tab: paste preview, chalk slider, sorting
 BASE=http://127.0.0.1:3911 node test/portfolio-ui-test.mjs   # two configured entries: per-entry picks, portfolio table, λ slider, season paths (picks week 1 then clears)
