@@ -1,3 +1,6 @@
 node_modules/
 data/
 *.xlsx
+client_secret_*.json
+*.env
+.env
