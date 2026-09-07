@@ -11,7 +11,8 @@ async function withStore(seed, { adminEmail = 'me@example.com' } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'fs-store-'));
   if (seed !== undefined) writeFileSync(path.join(dir, 'store.json'), JSON.stringify(seed, null, 2));
   const prevDir = process.env.DATA_DIR, prevAdmin = process.env.ADMIN_EMAIL;
-  process.env.DATA_DIR = dir; process.env.ADMIN_EMAIL = adminEmail;
+  process.env.DATA_DIR = dir;
+  if (adminEmail === undefined) delete process.env.ADMIN_EMAIL; else process.env.ADMIN_EMAIL = adminEmail;
   const store = await import(`../lib/store.js?case=${n++}`);
   const restore = () => {
     if (prevDir === undefined) delete process.env.DATA_DIR; else process.env.DATA_DIR = prevDir;
@@ -32,6 +33,34 @@ const V1 = {
   reminded: { '2026-1-24': 123 },
   sg: { 2026: { 1: { data: { KC: { winProb: 0.7, consensusPct: 0.3 } }, importedAt: 'x', source: 'paste' } } },
 };
+
+test('legacy migration requires an admin without touching the original, then recovers the same picks', async () => {
+  for (const adminEmail of [undefined, '   ']) {
+    const dir = mkdtempSync(path.join(tmpdir(), 'fs-store-admin-'));
+    const file = path.join(dir, 'store.json');
+    const original = JSON.stringify(V1, null, 2);
+    writeFileSync(file, original);
+    const prevDir = process.env.DATA_DIR, prevAdmin = process.env.ADMIN_EMAIL;
+    process.env.DATA_DIR = dir;
+    if (adminEmail === undefined) delete process.env.ADMIN_EMAIL; else process.env.ADMIN_EMAIL = adminEmail;
+    try {
+      await assert.rejects(import(`../lib/store.js?missing-admin=${n++}`), /ADMIN_EMAIL must be set to migrate the legacy store/);
+      assert.equal(readFileSync(file, 'utf8'), original, 'the legacy file bytes stay unchanged');
+      assert.equal(existsSync(path.join(dir, 'store.v1.bak.json')), false, 'validation happens before backup');
+
+      process.env.ADMIN_EMAIL = 'me@example.com';
+      const store = await import(`../lib/store.js?recovered-admin=${n++}`);
+      assert.equal(store.get().users['pending:me@example.com'].leagues[store.DEFAULT_LEAGUE].entryPicks[2026][0][1].team, 'KC');
+      const claimed = store.upsertUser({ sub: 'recovered', email: 'me@example.com' });
+      assert.equal(claimed.claimed, true);
+      assert.equal(store.picksFor(claimed.uid, store.DEFAULT_LEAGUE, 2026, 0)[1].team, 'KC');
+    } finally {
+      if (prevDir === undefined) delete process.env.DATA_DIR; else process.env.DATA_DIR = prevDir;
+      if (prevAdmin === undefined) delete process.env.ADMIN_EMAIL; else process.env.ADMIN_EMAIL = prevAdmin;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
 
 test('v1 data lands under a pending key and splits along the league boundary', async () => {
   const { store, restore } = await withStore(V1);
