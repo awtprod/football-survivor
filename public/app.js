@@ -384,8 +384,9 @@ function maybeOnboard() {
 async function openOnboarding(rerun = false) {
   const d = state.data, s = d.settings;
   $('#onb')?.remove(); // a second open replaces the first, never stacks two overlays over the app
-  onb.open = true; onb.busy = false; onb.touched = false;
+  onb.open = true; onb.busy = false;
   const existing = (s.myEntries?.length ? s.myEntries : [s.myEntry || '']).filter(Boolean);
+  onb.touched = existing.length > 0;
   // Prefill from Google, but only as a starting point: the sheet is what the pool admin typed, and
   // 12% of this pool's entries are handles rather than "Last, First".
   onb.name = crowd.stripEntryNo(existing[0] || '') || nameFromProfile(d.user);
