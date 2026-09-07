@@ -99,6 +99,18 @@ test('/auth/login starts a PKCE flow and stashes state in a short-lived cookie',
   assert.ok(!u.search.includes(stash.verifier));
 });
 
+test('/auth/login stashes only validated local redirects', async () => {
+  for (const [next, expected] of [
+    ['/settings?tab=pool#entries', '/settings?tab=pool#entries'],
+    ['https://evil.example', '/'], ['//evil.example', '/'], ['/\\evil.example', '/'], ['/\nevil', '/'],
+  ]) {
+    const r = await fetch(`${BASE}/auth/login?next=${encodeURIComponent(next)}`, { redirect: 'manual' });
+    const cookie = r.headers.getSetCookie().find((c) => c.startsWith('sv_oauth='));
+    const stash = JSON.parse(Buffer.from(decodeURIComponent(cookie.split('=')[1].split(';')[0]), 'base64url').toString());
+    assert.equal(stash.next, expected, next);
+  }
+});
+
 test('the callback refuses a mismatched state without contacting Google', async () => {
   const login = await fetch(`${BASE}/auth/login`, { redirect: 'manual' });
   const cookie = login.headers.getSetCookie().find((c) => c.startsWith('sv_oauth=')).split(';')[0];

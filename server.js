@@ -252,7 +252,7 @@ async function reminderTick() {
           const when = lead === 0 ? 'now' : `in ${lead}h`;
           // Tag includes the league so two pools do not replace each other's notification.
           await sendPush(uid, { title: `Survivor: Week ${week} pick${missing.length > 1 ? `s (${missing.length} entries)` : ''} due ${when}`, body: top ? `Top suggestion: ${top.team} vs ${top.opp} (${Math.round(top.prob * 100)}%)` : 'Open the app to lock your pick.', url: '/', tag: `survivor-${lid}-w${week}` });
-          console.log(`[reminder] ${u.email} week ${week} lead ${lead}h`);
+          console.log(`[reminder] ${uid} week ${week} lead ${lead}h`);
         }
       }
     }
@@ -316,8 +316,7 @@ async function authRoute(req, res, url) {
   if (url.pathname === '/auth/login') {
     if (cfg.AUTH_DISABLED) { res.writeHead(302, { location: '/' }); return res.end(); }
     const verifier = oauth.randomToken(), state = oauth.randomToken(), nonce = oauth.randomToken();
-    let next = url.searchParams.get('next') || '/';
-    if (!next.startsWith('/') || next.startsWith('//')) next = '/'; // no open redirect
+    const next = oauth.localRedirect(url.searchParams.get('next'));
     const stash = Buffer.from(JSON.stringify({ state, nonce, verifier, next })).toString('base64url');
     // The whole in-flight auth state rides in the cookie, so there is no server-side pending map to
     // keep or expire. Signing it would add nothing: anyone who can set this cookie can just log in.
@@ -350,15 +349,14 @@ async function authRoute(req, res, url) {
     } catch (e) { console.warn('[auth] sign-in failed:', e.message); return deny(400, 'Sign-in failed', esc(e.message)); }
 
     if (!cfg.isAllowed(claims.email)) {
-      console.warn(`[auth] refused ${claims.email} (sub ${claims.sub}) - not on the allowlist`);
+      console.warn(`[auth] refused sub ${claims.sub} - not on the allowlist`);
       return deny(403, 'Not on the list', `${esc(claims.email)} is not allowed to use this app. Ask the pool admin to add it, then try again.`);
     }
     const { uid, claimed } = store.upsertUser({ sub: claims.sub, email: claims.email, name: claims.name, picture: claims.picture });
-    // Logged so that a friend signing in with the wrong Google account is diagnosable rather than
-    // just "my picks vanished", and so a mismatched ADMIN_EMAIL is visible on the very first login.
-    console.log(`[auth] ${claims.email} -> ${uid}${store.isAdminOf(uid) ? ' (admin)' : ''}${claimed ? ' [claimed the migrated data]' : ''}`);
+    // Log the stable Google identity linkage and whether it claimed the migrated admin record.
+    console.log(`[auth] ${claims.sub} -> ${uid}${store.isAdminOf(uid) ? ' (admin)' : ''}${claimed ? ' [claimed the migrated data]' : ''}`);
     const sid = session.create({ uid, email: claims.email, name: claims.name, picture: claims.picture, ua: req.headers['user-agent'] });
-    res.writeHead(302, { location: stash.next || '/', 'set-cookie': [clear, setCookie('sv_session', sid, { maxAge: 30 * 86400 })] });
+    res.writeHead(302, { location: oauth.localRedirect(stash.next), 'set-cookie': [clear, setCookie('sv_session', sid, { maxAge: 30 * 86400 })] });
     return res.end();
   }
 

@@ -3,6 +3,13 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import * as oauth from '../lib/oauth.js';
 
+test('localRedirect accepts local routes and rejects URL-normalization escape tricks', () => {
+  for (const value of ['/settings?tab=pool#entries', '/?next=yes', '/a/b']) assert.equal(oauth.localRedirect(value), value);
+  for (const value of [undefined, '', 'https://evil.example', '//evil.example', '/\\evil.example', '/a\\b', '/\nevil', '/\u0000evil']) {
+    assert.equal(oauth.localRedirect(value), '/', String(value));
+  }
+});
+
 // A local RSA keypair stands in for Google's: we serve its public half as a fake JWKS, so every
 // verification path is exercised without touching the network.
 const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
