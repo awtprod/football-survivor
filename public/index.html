@@ -48,7 +48,21 @@ textarea.paste { width:100%; min-height:110px; background:var(--card2); color:va
 input[type=range] { width:100%; margin:8px 0 } .stat { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--ink2) } .stat b { color:var(--ink); font-size:15px; display:block }
 .est { display:inline-block; font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:var(--warn); border:1px solid var(--warn); border-radius:4px; padding:0 5px; margin-left:6px; vertical-align:2px }
 .empty { color:var(--muted); text-align:center; padding:24px 0 }
+.ovl { position:fixed; inset:0; z-index:30; background:#0009; backdrop-filter:blur(3px); display:flex; align-items:flex-end; justify-content:center; overflow-y:auto; padding: calc(16px + env(safe-area-inset-top)) 0 0 }
+.ovl .sheet { background:var(--card); border:1px solid var(--line); border-radius:16px 16px 0 0; padding:18px 16px calc(18px + env(safe-area-inset-bottom)); width:100%; max-width:520px; margin-top:auto }
+.ovl .sheet h2 { margin:0 0 6px; font-size:19px; letter-spacing:.2px }
+.ovl .sheet p.note { margin:0 0 12px } .ovl .sheet .chips { margin-bottom:2px }
+.onb-act { display:flex; gap:8px; justify-content:flex-end; margin-top:14px } .onb-act .btn { flex:0 0 auto }
+@media (min-width:560px) { .ovl { align-items:center; padding:16px } .ovl .sheet { border-radius:16px; margin:auto } }
 .chips { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px } .chips button { background:var(--card2); border:1px solid var(--line); color:var(--ink2); border-radius:999px; padding:5px 11px; font:inherit; font-size:12px } .chips button.on { border-color:var(--accent); color:var(--ink) }
+#gate { position:fixed; inset:0; z-index:60; display:grid; place-items:center; background:var(--bg,#0e0f12); padding:24px }
+#gate[hidden] { display:none }
+#gate .gatecard { max-width:22rem; text-align:center }
+#gate h2 { font-size:20px; margin:0 0 6px }
+#gate p { color:var(--muted); margin:0 0 18px }
+#gate .btn { display:block; text-decoration:none; padding:13px }
+/* The gate covers a half-painted app; hiding the chrome stops it peeking through. */
+body.gated header, body.gated nav, body.gated main { display:none }
 </style>
 </head>
 <body data-palette="#3987e5,#d95926,#199e70,#c98500">
@@ -67,6 +81,12 @@ input[type=range] { width:100%; margin:8px 0 } .stat { display:flex; gap:14px; f
   <button data-v="trends"><svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>Trends</button>
   <button data-v="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings</button>
 </nav>
+<div id="gate" hidden><div class="gatecard">
+  <h2>Survivor Picks</h2>
+  <p id="gateMsg">Sign in to see your picks.</p>
+  <a class="btn primary" id="gateBtn" href="/auth/login">Sign in with Google</a>
+  <button class="btn" id="gateRetry" style="margin-top:8px;width:100%">I signed in — reload</button>
+</div></div>
 <div class="tip" id="tip"></div><div class="toast" id="toast"></div>
 <script type="module" src="/app.js"></script>
 </body>

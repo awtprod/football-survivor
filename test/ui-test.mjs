@@ -1,9 +1,10 @@
 import puppeteer from 'puppeteer-core';
+const B = process.env.BASE || 'http://127.0.0.1:3910';
 const b = await puppeteer.launch({ executablePath: '/usr/bin/google-chrome', headless: true, args: ['--no-sandbox', '--disable-gpu'], userDataDir: '/tmp/survivor-test-profile' });
 const p = await b.newPage(); await p.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
 const errs = []; p.on('pageerror', (e) => errs.push('pageerror ' + e.message)); p.on('console', (m) => { if (m.type() === 'error') errs.push('console ' + m.text()); });
 const shot = (n) => p.screenshot({ path: `/tmp/tsshot-${n}.png` });
-await p.goto('https://openclaw-server.tailbd9828.ts.net:8446/', { waitUntil: 'networkidle0' });
+await p.goto(B + '/', { waitUntil: 'networkidle0' });
 await p.waitForFunction(() => document.querySelectorAll('#v-pick .row').length > 0, { timeout: 15000 });
 console.log('rows', await p.$$eval('#v-pick .row', (r) => r.length), 'header', await p.$eval('#hdr', (e) => e.textContent));
 await shot('pick');
@@ -34,7 +35,7 @@ console.log('tooltip', await p.$eval('#tip', (e) => e.style.display + ' ' + e.in
 await shot('trends-hover');
 // settings + push subscribe (headless chrome supports push subscription with a VAPID key? usually yes via FCM; try)
 await p.click('nav button[data-v="settings"]'); await shot('settings');
-const ctx = b.defaultBrowserContext(); await ctx.overridePermissions('https://openclaw-server.tailbd9828.ts.net:8446', ['notifications']);
+const ctx = b.defaultBrowserContext(); await ctx.overridePermissions(B, ['notifications']);
 await p.click('#subBtn'); await new Promise(r=>setTimeout(r,3000)); console.log('toast', await p.$eval('#toast', (e) => e.textContent));
 const sw = await p.evaluate(async () => { const r = await navigator.serviceWorker.getRegistration(); return r ? { scope: r.scope, active: !!r.active } : null; }); console.log('sw', sw);
 const cached = await p.evaluate(async () => (await (await caches.open('survivor-v1')).keys()).map((r) => new URL(r.url).pathname)); console.log('cached', cached);
