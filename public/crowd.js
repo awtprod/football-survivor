@@ -15,8 +15,23 @@ export function isAvailable(entry, team, week) {
 /** Number of rivals (pass alive rivals, excluding yourself) who could still take `team` in `week`. */
 export function availableCount(rivals, team, week) { let n = 0; for (const r of rivals) if (isAvailable(r, team, week)) n++; return n; }
 
+/** A workbook entry name with any trailing "#n" removed, case kept ("Ryan, Andrew #2" -> "Ryan, Andrew"). */
+export function stripEntryNo(name) { return String(name ?? '').replace(/\s*#\s*\d+\s*$/, '').trim(); }
+
 /** Owner of a workbook entry: the name with a trailing "#n" removed ("Ryan, Brendan #2" -> "ryan, brendan"). */
-export function ownerOf(name) { return String(name ?? '').replace(/\s*#\s*\d+\s*$/, '').trim().toLowerCase(); }
+export function ownerOf(name) { return stripEntryNo(name).toLowerCase(); }
+
+/**
+ * This pool's naming rule, inverse of stripEntryNo: one entry is the bare name ("Ryan, Andrew"), several are all
+ * numbered from 1 ("Ryan, Andrew #1", "Ryan, Andrew #2", ...). A blank name stays blank -- that is an entry the
+ * owner keeps in the app but which is not on the sheet, so it must not become a bogus "#1" row.
+ */
+export function entryNames(base, count) {
+  const name = stripEntryNo(base);
+  const n = Math.max(1, Math.min(8, Math.floor(count) || 1));
+  if (!name) return Array.from({ length: n }, () => '');
+  return n === 1 ? [name] : Array.from({ length: n }, (_, i) => `${name} #${i + 1}`);
+}
 
 /**
  * Same-owner diversification (mean-field). For every owner with 2+ entries in `perEntry`, each entry's chance of

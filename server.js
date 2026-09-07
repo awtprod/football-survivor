@@ -290,9 +290,12 @@ function sessionUser(req) {
   if (cfg.AUTH_DISABLED) {
     const email = req.headers['x-test-user'];
     if (!email) return null;
-    // Tests get real store records so per-user isolation is exercised, not bypassed.
-    const { uid } = store.upsertUser({ sub: `test-${oauth.normalizeEmail(email)}`, email: String(email), name: String(email).split('@')[0] });
-    return { uid, lid: store.leagueOf(uid), email: String(email), name: String(email).split('@')[0], picture: '' };
+    // Tests get real store records so per-user isolation is exercised, not bypassed. The name headers
+    // stand in for the Google `profile` claims, so setup's prefill runs its real code path here.
+    const givenName = String(req.headers['x-test-given-name'] || '');
+    const familyName = String(req.headers['x-test-family-name'] || '');
+    const { uid } = store.upsertUser({ sub: `test-${oauth.normalizeEmail(email)}`, email: String(email), name: String(email).split('@')[0], givenName, familyName });
+    return { uid, lid: store.leagueOf(uid), email: String(email), name: String(email).split('@')[0], givenName, familyName, picture: '' };
   }
   const sid = parseCookies(req.headers.cookie).sv_session;
   const s = session.touch(sid);
@@ -300,10 +303,10 @@ function sessionUser(req) {
   if (!cfg.isAllowed(s.email)) { session.destroy(sid); return null; } // revoked since they logged in
   // A session minted before the store kept user records has a uid with no row behind it. Create or
   // claim it on first use rather than invalidating everyone's cookie to run the migration.
-  if (!store.user(s.uid)) store.upsertUser({ sub: s.uid.replace(/^g:/, ''), email: s.email, name: s.name, picture: s.picture });
+  if (!store.user(s.uid)) store.upsertUser({ sub: s.uid.replace(/^g:/, ''), email: s.email, name: s.name, givenName: s.givenName, familyName: s.familyName, picture: s.picture });
   return { ...s, lid: store.leagueOf(s.uid) };
 }
-const publicUser = (u) => ({ email: u.email, name: u.name, picture: u.picture, isAdmin: store.isAdminOf(u.uid, u.lid) });
+const publicUser = (u) => ({ email: u.email, name: u.name, givenName: u.givenName || '', familyName: u.familyName || '', picture: u.picture, isAdmin: store.isAdminOf(u.uid, u.lid) });
 
 /** Lax cookies already stop cross-site form posts; this refuses them explicitly too. */
 function crossOrigin(req) {
@@ -352,10 +355,10 @@ async function authRoute(req, res, url) {
       console.warn(`[auth] refused sub ${claims.sub} - not on the allowlist`);
       return deny(403, 'Not on the list', `${esc(claims.email)} is not allowed to use this app. Ask the pool admin to add it, then try again.`);
     }
-    const { uid, claimed } = store.upsertUser({ sub: claims.sub, email: claims.email, name: claims.name, picture: claims.picture });
+    const { uid, claimed } = store.upsertUser({ sub: claims.sub, email: claims.email, name: claims.name, givenName: claims.given_name, familyName: claims.family_name, picture: claims.picture });
     // Log the stable Google identity linkage and whether it claimed the migrated admin record.
     console.log(`[auth] ${claims.sub} -> ${uid}${store.isAdminOf(uid) ? ' (admin)' : ''}${claimed ? ' [claimed the migrated data]' : ''}`);
-    const sid = session.create({ uid, email: claims.email, name: claims.name, picture: claims.picture, ua: req.headers['user-agent'] });
+    const sid = session.create({ uid, email: claims.email, name: claims.name, givenName: claims.given_name, familyName: claims.family_name, picture: claims.picture, ua: req.headers['user-agent'] });
     res.writeHead(302, { location: oauth.localRedirect(stash.next), 'set-cookie': [clear, setCookie('sv_session', sid, { maxAge: 30 * 86400 })] });
     return res.end();
   }
@@ -423,6 +426,7 @@ http.createServer(async (req, res) => {
         if (Number.isInteger(b.reminderHour) && b.reminderHour >= 0 && b.reminderHour <= 23) prefs.reminderHour = b.reminderHour;
         if (typeof b.reminderTz === 'string' && b.reminderTz.length < 64) { try { new Date().toLocaleString('en-US', { timeZone: b.reminderTz }); prefs.reminderTz = b.reminderTz; } catch {} }
         if (typeof b.chalkFactor === 'number' && b.chalkFactor >= 0.25 && b.chalkFactor <= 3) set.chalkFactor = Math.round(b.chalkFactor * 100) / 100;
+        if (typeof b.onboarded === 'boolean') set.onboarded = b.onboarded;
         if (typeof b.myEntry === 'string') set.myEntry = b.myEntry.slice(0, 80);
         if (Array.isArray(b.myEntries) && b.myEntries.length <= 8 && b.myEntries.every((n) => typeof n === 'string')) { set.myEntries = b.myEntries.map((n) => n.trim().slice(0, 80)); if (set.myEntries.length) set.myEntry = set.myEntries[0]; }
         if (typeof b.lambda === 'number' && b.lambda >= 0 && b.lambda <= 1) set.lambda = Math.round(b.lambda * 100) / 100;
@@ -436,6 +440,13 @@ http.createServer(async (req, res) => {
         if (typeof b.sgProvider === 'string' && sgrid.PROVIDERS.includes(b.sgProvider) && store.isAdminOf(me.uid, me.lid)) s.leagues[me.lid].settings.sgProvider = b.sgProvider;
       });
       return json(res, 200, { ...store.settingsFor(me.uid, me.lid), ...store.prefsFor(me.uid) });
+    }
+    // Entry names on this league's workbook, so setup can find you on the sheet and count your rows.
+    // Readable by any member: you cannot pick your own row without seeing the list.
+    if (url.pathname === '/api/pool/names') {
+      const doc = pool.load(me.lid);
+      const names = Array.isArray(doc?.entries) ? doc.entries.map((e) => String(e?.name ?? '').trim()).filter(Boolean).slice(0, 2000) : [];
+      return json(res, 200, { names, season: doc?.season ?? null, fileName: doc?.fileName || null, importedAt: doc?.importedAt || null });
     }
     if (url.pathname === '/api/pool' && req.method === 'POST') {
       if (!store.isAdminOf(me.uid, me.lid)) return json(res, 403, { error: 'only the pool admin can upload the workbook' });

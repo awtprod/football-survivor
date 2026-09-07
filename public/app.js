@@ -1,6 +1,7 @@
 /* Survivor Picks PWA client */
 import * as crowd from '/crowd.js';
 const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const pct = (p) => p == null ? '—' : Math.round(p * 100) + '%';
 const state = { data: null, week: null, season: null, view: 'pick', filter: 'all', open: null, sort: 'ev', chalk: null, entry: 0, objective: 'ev' };
@@ -30,6 +31,15 @@ function showGate(msg) {
   document.body.classList.add('gated'); g.hidden = false;
 }
 function hideGate() { document.body.classList.remove('gated'); const g = $('#gate'); if (g) g.hidden = true; }
+/** POST the Knockout Pool workbook. Shared by Settings and first-run setup. Admin only, server-side. */
+async function uploadWorkbook(file) {
+  const r = await fetch(`/api/pool?season=${state.data.season}&name=${encodeURIComponent(file.name)}`, { method: 'POST', body: file, credentials: 'same-origin' });
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 401) { showGate(); throw new AuthError(j.error); }
+  if (!r.ok) { const e = new Error(j.error || r.statusText); e.status = r.status; throw e; }
+  onb.names = null; // cached sheet names are stale now
+  return j;
+}
 async function load(refresh = false) {
   $('#hdr').textContent = 'Loading…';
   try {
@@ -50,6 +60,7 @@ function render() {
   for (const f of [renderPick, renderPool, renderSeason, renderTrends, renderSettings]) {
     try { f(); } catch (e) { console.error(f.name, e); }
   }
+  maybeOnboard();
 }
 
 /* ---------- Pick view ---------- */
@@ -298,7 +309,7 @@ function renderSettings() {
     <label class="f"><input type="checkbox" id="mustDifferS" style="width:auto" ${s.mustDiffer ? 'checked' : ''}> Portfolio: my entries must take different teams</label>
     <label class="f"><input type="checkbox" id="behaviour" style="width:auto" ${s.behaviour ? 'checked' : ''}> Per-rival behaviour tuning (chalk hit rate)</label>
     <label class="f">Elite teams for the lookahead (blank = top 8 by projected win%)<input id="elite" value="${esc((s.elite || []).join(' '))}" placeholder="KC BUF DET PHI BAL"></label>
-    <button class="btn primary" id="savePool">Save</button></div>
+    <button class="btn primary" id="savePool">Save</button> <button class="btn" id="reSetup">Re-run setup</button></div>
     <div class="card"><h2>Push notifications</h2>
     <div class="note" style="margin-bottom:8px">Status: ${supported ? `permission ${perm}` : 'not supported in this browser'} · ${d.pushSubscribed} device(s) subscribed${!standalone && /iPhone|iPad/.test(navigator.userAgent) ? '<br><b>iPhone:</b> tap Share → Add to Home Screen first, then open from the icon to enable push.' : ''}</div>
     <button class="btn primary" id="subBtn" ${!supported ? 'disabled' : ''}>Enable on this device</button> <button class="btn" id="testBtn">Send test</button></div>
@@ -313,6 +324,7 @@ function renderSettings() {
   $('#savePool').onclick = async () => { const elite = $('#elite').value.toUpperCase().split(/[\s,]+/).filter(Boolean); if (elite.some((t) => !/^[A-Z]{2,3}$/.test(t))) return toast('Elite teams must be codes like KC');
     const myEntries = $('#myEntries').value.split(/\r?\n/).map((x) => x.trim()); while (myEntries.length > 1 && !myEntries[myEntries.length - 1]) myEntries.pop(); if (myEntries.length > 8) return toast('At most 8 entries');
     try { await api('/api/settings', { myEntries, myEntry: myEntries[0] || '', behaviour: $('#behaviour').checked, elite, mustDiffer: $('#mustDifferS').checked }); state.entry = 0; toast('Saved'); load(); } catch (e) { fail(e); } };
+  $('#reSetup').onclick = () => openOnboarding(true);
   $('#subBtn').onclick = async () => {
     try { const reg = await navigator.serviceWorker.ready; const p = await Notification.requestPermission(); if (p !== 'granted') return toast('Permission denied');
       const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64(d.vapidPublicKey) });
@@ -320,9 +332,7 @@ function renderSettings() {
   $('#poolBtn').onclick = () => $('#poolFile').click();
   $('#poolFile').onchange = async () => {
     const f = $('#poolFile').files[0]; if (!f) return; toast('Uploading…');
-    try { const r = await fetch(`/api/pool?season=${d.season}&name=${encodeURIComponent(f.name)}`, { method: 'POST', body: f, credentials: 'same-origin' }); const j = await r.json().catch(() => ({}));
-      if (r.status === 401) { showGate(); throw new AuthError(j.error); }
-      if (!r.ok) throw new Error(j.error || r.statusText);
+    try { const j = await uploadWorkbook(f);
       toast(`Imported ${j.entries} entries · weeks with picks: ${j.weeks.join(', ') || 'none'}${j.unknown.length ? ` · unrecognized: ${j.unknown.slice(0, 3).join(', ')}` : ''}`); await load(); }
     catch (e) { fail(e, 'Import failed: '); } finally { $('#poolFile').value = ''; }
   };
@@ -333,6 +343,131 @@ function renderSettings() {
   $('#testBtn').onclick = async () => { try { const r = await api('/api/test-push', {}); toast(`Sent to ${r.sent} device(s)`); } catch (e) { fail(e); } };
 }
 function b64(s) { const p = '='.repeat((4 - (s.length % 4)) % 4); const b = atob((s + p).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(b, (c) => c.charCodeAt(0)); }
+
+/* ---------- First-run setup ---------- */
+// Sign-in tells us who you are; it cannot tell us which rows on the pool sheet are yours. The names
+// are exact strings ("Ryan, Andrew #2") that have to match the workbook or nothing downstream lines
+// up, so setup asks for the name and the entry count and writes the names itself.
+const onb = { open: false, step: 'you', name: '', count: 1, names: null, busy: false, touched: false };
+
+/** "Last, First" from the Google profile claims, when both are present. */
+function nameFromProfile(user) {
+  const fam = String(user?.familyName || '').trim(), giv = String(user?.givenName || '').trim();
+  return fam && giv ? `${fam}, ${giv}` : '';
+}
+
+/** Workbook names grouped by owner: [{ base, count, names }], most entries first. */
+function sheetOwners() {
+  const by = new Map();
+  for (const n of onb.names || []) { const k = crowd.ownerOf(n); if (!k) continue; const g = by.get(k) || { base: crowd.stripEntryNo(n), names: [] }; g.names.push(n); by.set(k, g); }
+  return [...by.values()].map((g) => ({ ...g, count: g.names.length })).sort((a, b) => b.count - a.count || a.base.localeCompare(b.base));
+}
+const onSheet = (name) => !!name && (onb.names || []).some((n) => n.toLowerCase() === name.trim().toLowerCase());
+
+/**
+ * A prefilled name is a guess until the sheet confirms it. When the workbook has exactly one owner
+ * with that name, adopt their entry count so the common case opens already correct — but never
+ * overwrite a count the user has chosen.
+ */
+function onbResolveCount() {
+  if (onb.touched) return;
+  const key = crowd.ownerOf(onb.name); if (!key) return;
+  const hit = sheetOwners().find((o) => o.base.toLowerCase() === key);
+  if (hit) onb.count = hit.count;
+}
+
+function maybeOnboard() {
+  const s = state.data?.settings; if (!s || onb.open) return;
+  if (!s.onboarded && !(s.myEntries?.length)) openOnboarding();
+}
+
+async function openOnboarding(rerun = false) {
+  const d = state.data, s = d.settings;
+  $('#onb')?.remove(); // a second open replaces the first, never stacks two overlays over the app
+  onb.open = true; onb.busy = false;
+  const existing = (s.myEntries?.length ? s.myEntries : [s.myEntry || '']).filter(Boolean);
+  onb.touched = existing.length > 0;
+  // Prefill from Google, but only as a starting point: the sheet is what the pool admin typed, and
+  // 12% of this pool's entries are handles rather than "Last, First".
+  onb.name = crowd.stripEntryNo(existing[0] || '') || nameFromProfile(d.user);
+  onb.count = Math.max(1, existing.length);
+  onb.step = d.pool || rerun ? 'you' : 'sheet';
+  document.body.insertAdjacentHTML('beforeend', `<div class="ovl" id="onb"><div class="sheet" role="dialog" aria-modal="true" aria-label="Set up your entries"></div></div>`);
+  drawOnboarding();
+  if (onb.names == null) { try { onb.names = (await api('/api/pool/names')).names || []; } catch { onb.names = []; } }
+  if (onb.open) { onbResolveCount(); drawOnboarding(); }
+}
+function closeOnboarding() { onb.open = false; $('#onb')?.remove(); }
+
+function drawOnboarding() {
+  const el = $('#onb .sheet'); if (!el) return;
+  const admin = !!state.data.user?.isAdmin;
+  el.innerHTML = onb.step === 'sheet' ? `<h2>Welcome</h2>
+    <p class="note">This app tracks your survivor picks against the rest of the pool. It works best with the weekly <b>Knockout Pool</b> workbook, which setup uses to find your entries on the sheet.${admin ? ' You can also upload it later in Settings.' : ' Only the pool admin can upload it — until they do, you can still name your entries by hand.'}</p>
+    <input type="file" id="onbFile" accept=".xlsx" style="display:none">
+    <div class="onb-act">${admin ? `<button class="btn" id="onbSkipSheet">I don't have it yet</button><button class="btn primary" id="onbUpload">Upload workbook</button>`
+      : `<button class="btn primary" id="onbSkipSheet">Continue</button>`}</div>`
+  : `<h2>Set up your entries</h2>
+    <p class="note">The pool lists everyone by <b>last name, first name</b>. Enter yours the way it appears on the sheet — if you have more than one entry, setup adds the <b>#1</b>, <b>#2</b> … suffixes for you.</p>
+    <label class="f">Your name on the pool sheet<input id="onbName" value="${esc(onb.name)}" placeholder="Ryan, Andrew" autocomplete="off" enterkeyhint="done"></label>
+    <div id="onbSug"></div>
+    <label class="f" style="margin-bottom:4px">How many entries do you have?</label>
+    <div class="chips" id="onbCount">${Array.from({ length: 8 }, (_, i) => `<button data-n="${i + 1}" class="${onb.count === i + 1 ? 'on' : ''}">${i + 1}</button>`).join('')}</div>
+    <div id="onbPrev"></div>
+    <div class="onb-act"><button class="btn" id="onbSkip">Skip for now</button><button class="btn primary" id="onbSave">Save entries</button></div>`;
+  if (onb.step === 'sheet') {
+    $('#onbSkipSheet').onclick = () => { onb.step = 'you'; drawOnboarding(); };
+    if (!admin) return;
+    $('#onbUpload').onclick = () => $('#onbFile').click();
+    $('#onbFile').onchange = async () => { const f = $('#onbFile').files[0]; if (!f) return;
+      try { const j = await uploadWorkbook(f); toast(`Imported ${j.entries} entries`); onb.step = 'you'; drawOnboarding();
+        try { onb.names = (await api('/api/pool/names')).names || []; } catch { onb.names = []; }
+        if (onb.open) { onbResolveCount(); drawOnboarding(); } }
+      catch (e) { fail(e, 'Import failed: '); } finally { if ($('#onbFile')) $('#onbFile').value = ''; } };
+    return;
+  }
+  const nameEl = $('#onbName');
+  nameEl.oninput = () => { onb.name = nameEl.value; onb.touched = true; onbUpdate(); };
+  $('#onbCount').onclick = (e) => { const b = e.target.closest('button[data-n]'); if (!b) return; onb.count = +b.dataset.n; onb.touched = true;
+    $$('#onbCount button').forEach((x) => x.classList.toggle('on', +x.dataset.n === onb.count)); onbUpdate(); };
+  $('#onbSkip').onclick = async () => {
+    try { await api('/api/settings', { onboarded: true }); } catch (e) { return fail(e, 'Could not skip setup: '); }
+    closeOnboarding(); toast('You can finish setup any time in Settings'); load(); };
+  $('#onbSave').onclick = saveOnboarding;
+  onbUpdate();
+}
+
+/** Suggestions + preview only, so typing never rebuilds (and refocuses) the name input. */
+function onbUpdate() {
+  const q = crowd.stripEntryNo(onb.name).toLowerCase();
+  const sug = $('#onbSug'); const prev = $('#onbPrev'); if (!sug || !prev) return;
+  const hits = q.length >= 2 ? sheetOwners().filter((o) => o.base.toLowerCase().includes(q) && o.base.toLowerCase() !== q).slice(0, 5) : [];
+  sug.innerHTML = hits.length ? `<div class="note" style="margin:-2px 0 6px">On the sheet:</div><div class="chips" id="onbSugChips">${hits.map((o) => `<button data-b="${esc(o.base)}" data-n="${o.count}">${esc(o.base)} · ${o.count} ${o.count === 1 ? 'entry' : 'entries'}</button>`).join('')}</div>` : '';
+  const chips = $('#onbSugChips');
+  if (chips) chips.onclick = (e) => { const b = e.target.closest('button[data-b]'); if (!b) return;
+    onb.name = b.dataset.b; onb.count = +b.dataset.n; onb.touched = true; $('#onbName').value = onb.name;
+    $$('#onbCount button').forEach((x) => x.classList.toggle('on', +x.dataset.n === onb.count)); onbUpdate(); };
+  const names = crowd.entryNames(onb.name, onb.count);
+  const known = (onb.names || []).length > 0;
+  const blank = !crowd.stripEntryNo(onb.name);
+  const miss = known ? names.filter((n) => !onSheet(n)).length : 0;
+  prev.innerHTML = blank
+    ? `<div class="note">${known ? 'Start typing and setup will find you on the sheet.' : 'Type the name you go by in the pool.'} Leaving this blank saves ${onb.count > 1 ? `${onb.count} unnamed entries` : 'an unnamed entry'} — picks still work, but the app can't match you to the workbook.</div>`
+    : `<div class="detail" id="onbPreview"><b>Saving ${names.length} ${names.length === 1 ? 'entry' : 'entries'}:</b>
+        ${names.map((n) => `<div style="margin-top:4px">${esc(n)}${known ? (onSheet(n) ? ' <span class="pill good">on the sheet</span>' : ' <span class="pill warn">not on the sheet</span>') : ''}</div>`).join('')}
+        ${!known ? '<div class="note" style="margin-top:6px">No workbook imported yet, so these names are unverified.</div>'
+          : miss ? `<div class="note" style="margin-top:6px">${miss === names.length ? 'None of these' : `${miss} of these`} match a row in the workbook. Check the spelling and the entry count, or save anyway if you are not on this sheet.</div>` : ''}</div>`;
+}
+
+async function saveOnboarding() {
+  if (onb.busy) return; onb.busy = true; const btn = $('#onbSave'); if (btn) btn.disabled = true;
+  const myEntries = crowd.entryNames(onb.name, onb.count);
+  try {
+    await api('/api/settings', { myEntries, myEntry: myEntries[0] || '', onboarded: true });
+    state.entry = 0; closeOnboarding(); toast(`Set up ${myEntries.length} ${myEntries.length === 1 ? 'entry' : 'entries'}`); await load();
+  } catch (e) { fail(e, 'Save failed: '); if (btn) btn.disabled = false; }
+  finally { onb.busy = false; }
+}
 
 /* ---------- Shell ---------- */
 function showView() { document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === 'v-' + state.view)); document.querySelectorAll('nav button').forEach((b) => b.classList.toggle('on', b.dataset.v === state.view)); $('#weekSel').value = state.week; window.scrollTo(0, 0); }

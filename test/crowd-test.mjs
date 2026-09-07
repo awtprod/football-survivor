@@ -77,3 +77,23 @@ test('chalk rates and lookahead depletion', () => {
   const inv = c.inventory([rival('a', { 1: 'NE' }), rival('b', {})], ['NE', 'LAC'], 2);
   assert.deepEqual(inv.map((x) => [x.name, x.held.length]), [['b', 2], ['a', 1]]);
 });
+
+test('entry names: one entry is the bare name, several are all numbered from #1', () => {
+  assert.deepEqual(c.entryNames('Ryan, Andrew', 1), ['Ryan, Andrew']);
+  assert.deepEqual(c.entryNames('Ryan, Andrew', 3), ['Ryan, Andrew #1', 'Ryan, Andrew #2', 'Ryan, Andrew #3']);
+  assert.equal(c.entryNames('Ryan, Andrew', 8).length, 8);
+  // count is clamped to the 1..8 the settings endpoint accepts
+  assert.deepEqual(c.entryNames('Beast', 0), ['Beast']);
+  assert.equal(c.entryNames('Beast', 99).length, 8);
+});
+
+test('entry names: round-trips with ownerOf/stripEntryNo and never invents a name for a blank entry', () => {
+  for (const n of c.entryNames('Acosta, E', 4)) assert.equal(c.ownerOf(n), 'acosta, e');
+  assert.equal(c.stripEntryNo('Cachet #12'), 'Cachet');
+  assert.equal(c.stripEntryNo('  Clark, Chris  '), 'Clark, Chris');
+  // re-running setup on an already-numbered name must not stack suffixes
+  assert.deepEqual(c.entryNames('Ryan, Andrew #2', 2), ['Ryan, Andrew #1', 'Ryan, Andrew #2']);
+  // a blank name means "an entry that is not on the sheet": stays blank, one slot per entry
+  assert.deepEqual(c.entryNames('', 3), ['', '', '']);
+  assert.deepEqual(c.entryNames(null, 1), ['']);
+});
