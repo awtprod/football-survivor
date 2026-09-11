@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node --test test/crowd-test.mjs test/portfolio-test.mjs test/survivorgrid-test.mjs test/oauth-test.mjs test/store-test.mjs test/auth-test.mjs test/isolation-test.mjs",
+    "test": "node --test test/crowd-test.mjs test/portfolio-test.mjs test/survivorgrid-test.mjs test/oauth-test.mjs test/store-test.mjs test/auth-test.mjs test/model-test.mjs test/isolation-test.mjs",
     "start": "node server.js"
   },
   "keywords": [],
