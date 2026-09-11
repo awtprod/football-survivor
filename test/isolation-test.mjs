@@ -88,14 +88,24 @@ test('push subscriptions belong to one person', async () => {
 });
 
 test('shared league data is admin-only to change but visible to everyone', async () => {
+  // A non-admin member is refused a write on every shared-data endpoint.
   for (const p of ['/api/pool?season=2026&name=x.xlsx', '/api/sg', '/api/sg/fetch']) {
     const r = await as(B, p, { method: 'POST', body: '{}' });
     assert.equal(r.status, 403, `${p} should be admin-only, got ${r.status}`);
     assert.match((await r.json()).error, /admin/);
   }
-  // The admin is not blocked by the same gate (400 = it got through and the body was rejected).
-  const r = await as(A, '/api/sg', { method: 'POST', body: JSON.stringify({ season: 2026, week: 1, text: '' }) });
-  assert.notEqual(r.status, 403, 'the admin must not be gated');
+  // The admin can actually write it: paste a pick grid (the CSV/paste form /api/sg parses) for the
+  // current week, using two real team codes from this week's slate so they map cleanly.
+  const st = await json(await as(A, '/api/state'));
+  const [t1, t2] = st.rows.map((r) => r.team);
+  const grid = `${t1}, 0.80, 0.30\n${t2}, 0.70, 0.20`;
+  const imp = await json(await as(A, '/api/sg', { method: 'POST', body: JSON.stringify({ season: st.season, week: st.week, text: grid, source: 'SurvivorGrid' }) }));
+  assert.ok(imp.teams >= 1, `admin import should store at least one team, got ${imp.teams}`);
+  // ...and every member sees it: bob reads the same shared grid back through his own state.
+  const b = await json(await as(B, `/api/state?season=${st.season}&week=${st.week}`));
+  assert.ok(b.sg, 'bob must see the shared SurvivorGrid data the admin imported');
+  assert.equal(b.sg.source, 'SurvivorGrid');
+  assert.ok(b.sg.data[t1], 'the imported team must be present in the shared data bob reads');
 });
 
 test('the store on disk keeps the two users apart', async () => {

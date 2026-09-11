@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node --test test/crowd-test.mjs test/portfolio-test.mjs test/survivorgrid-test.mjs test/oauth-test.mjs test/store-test.mjs test/auth-test.mjs test/isolation-test.mjs",
+    "test": "node --test test/crowd-test.mjs test/portfolio-test.mjs test/survivorgrid-test.mjs test/oauth-test.mjs test/store-test.mjs test/auth-test.mjs test/isolation-test.mjs test/model-test.mjs test/onboarding-count-test.mjs",
+    "test:ui": "node test/ui-test.mjs && node test/pool-ui-test.mjs && node test/portfolio-ui-test.mjs && node test/onboarding-ui-test.mjs && node test/push-test.mjs",
     "start": "node server.js"
   },
   "keywords": [],

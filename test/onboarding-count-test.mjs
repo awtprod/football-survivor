@@ -22,8 +22,10 @@ async function openWith({ myEntries, names }) {
   const state = { data: { settings: { myEntries }, user: { familyName: 'Ryan', givenName: 'Andrew' }, pool: true } };
   const context = {
     onb, state, crowd,
-    $: () => ({ remove() {} }),
-    document: { body: { insertAdjacentHTML() {} } },
+    // openOnboarding now wires a focus trap; the stub only needs the DOM surface it touches.
+    $: () => ({ remove() {}, addEventListener() {}, contains() { return false; } }),
+    $$: () => [],
+    document: { body: { insertAdjacentHTML() {} }, activeElement: null },
     drawOnboarding() {},
     api: async () => ({ names: ['Ryan, Andrew #1', 'Ryan, Andrew #2', 'Ryan, Andrew #3'] }),
   };

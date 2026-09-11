@@ -5,7 +5,10 @@ self.addEventListener('activate', (e) => { e.waitUntil(caches.keys().then((ks) =
 self.addEventListener('fetch', (e) => {
   const u = new URL(e.request.url);
   if (u.pathname.startsWith('/api/')) return; // network only
-  e.respondWith(fetch(e.request).then((r) => { if (r.ok && e.request.method === 'GET') caches.open(CACHE).then((c) => c.put(e.request, r.clone())); return r; }).catch(() => caches.match(e.request).then((m) => m || caches.match('/'))));
+  // Offline: serve the cached response if we have one. Only *navigations* fall back to the app
+  // shell — an uncached sub-resource (logo, icon) must fail cleanly, not resolve to index HTML.
+  e.respondWith(fetch(e.request).then((r) => { if (r.ok && e.request.method === 'GET') caches.open(CACHE).then((c) => c.put(e.request, r.clone())); return r; })
+    .catch(() => caches.match(e.request).then((m) => m || (e.request.mode === 'navigate' ? caches.match('/') : new Response('', { status: 504, statusText: 'offline' })))));
 });
 self.addEventListener('push', (e) => {
   let d = {}; try { d = e.data.json(); } catch { d = { title: 'Survivor', body: e.data?.text() || '' }; }
