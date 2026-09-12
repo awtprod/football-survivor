@@ -23,11 +23,19 @@ Wants=football-survivor.service
 
 [Service]
 Type=oneshot
-# Terminate TLS for football-survivor.__TAILNET__ and proxy to the local app.
-# Tailscale auto-provisions the cert for the service hostname (HTTPS is required
-# for the service worker and web-push to work). --bg applies the config and
-# returns; re-running is idempotent.
+# 1) Tailnet-only: terminate TLS for football-survivor.__TAILNET__ and proxy to
+# the local app. Tailscale auto-provisions the cert for the service hostname
+# (HTTPS is required for the service worker and web-push). --bg applies the
+# config and returns; re-running is idempotent. This svc: config is isolated
+# from the node root, so a plain `tailscale serve` there can't touch it.
 ExecStart=__TAILSCALE_BIN__ serve --bg --service=svc:football-survivor --https=443 http://127.0.0.1:3910
+# 2) Public (non-tailnet) access via Funnel on a DEDICATED port (8443), so it
+# doesn't collide with whatever uses the node root (:443, e.g. a report). This
+# lives in the node's own serve config (Funnel can't use a svc:), so it shares a
+# namespace with the root and can be overwritten — the .timer re-asserts it
+# every 5 min to heal that. Requires the `funnel` nodeAttr on tag:server
+# (see policy-grant.hujson). Public URL: https://openclaw-server.__TAILNET__:8443
+ExecStart=__TAILSCALE_BIN__ funnel --bg --https=8443 http://127.0.0.1:3910
 
 [Install]
 WantedBy=default.target

@@ -13,9 +13,11 @@ systemctl --user disable --now \
   football-survivor-tailscale.service \
   football-survivor.service 2>/dev/null || true
 
-# Withdraw just svc:football-survivor.
+# Withdraw just svc:football-survivor and the dedicated :8443 Funnel.
+# Neither touches the node root serve/funnel config (e.g. a report on :443).
 if [[ -n "$TAILSCALE_BIN" ]]; then
-  "$TAILSCALE_BIN" serve --service=svc:${SERVICE_NAME} clear 2>/dev/null || true
+  "$TAILSCALE_BIN" serve clear svc:${SERVICE_NAME} 2>/dev/null || true
+  "$TAILSCALE_BIN" funnel --https=8443 http://127.0.0.1:3910 off 2>/dev/null || true
 fi
 
 rm -f \

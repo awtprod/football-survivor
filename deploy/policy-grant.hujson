@@ -15,6 +15,16 @@
     "tag:server": ["autogroup:admin"],
   },
 
+  // Funnel (public, non-tailnet access) requires the "funnel" node attribute.
+  // The default policy grants it to autogroup:member, but a TAGGED node isn't a
+  // member — so add tag:server, or public serving on :8443 won't work.
+  "nodeAttrs": [
+    {
+      "target": ["autogroup:member", "tag:server"],
+      "attr":   ["funnel"],
+    },
+  ],
+
   "grants": [
     // IMPORTANT: tagging a node moves it from your user to the tag, so access
     // is then governed by ACLs. Keep your OWN access to the box (SSH, HTTPS)

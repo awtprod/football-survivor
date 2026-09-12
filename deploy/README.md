@@ -18,10 +18,25 @@ A Service is a separate, named endpoint with:
 So the report and the PWA can coexist, and the PWA can't be clobbered again.
 
 ```
-                          openclaw-server (host)
-  https://openclaw-server.tailbd9828.ts.net      -> node-root serve (the report; not ours)
-  https://football-survivor.tailbd9828.ts.net     -> svc:football-survivor -> 127.0.0.1:3910 (PWA)
+                              openclaw-server (host)
+  https://openclaw-server.tailbd9828.ts.net        -> node-root serve (the report; not ours)
+  https://openclaw-server.tailbd9828.ts.net:8443   -> Funnel -> 127.0.0.1:3910 (PWA, PUBLIC)
+  https://football-survivor.tailbd9828.ts.net       -> svc:football-survivor -> 127.0.0.1:3910 (PWA, tailnet-only)
 ```
+
+## Two ways in: tailnet-only Service vs. public Funnel
+- **Tailnet-only** (`football-survivor.<tailnet>`): the dedicated Service. Fully
+  isolated — a plain `tailscale serve` on the node root can't overwrite it.
+  Reachable only from devices on your tailnet.
+- **Public** (`openclaw-server.<tailnet>:8443`): Tailscale **Funnel**, for
+  devices *not* on your tailnet. Funnel only works on the **node hostname** and
+  only on ports **443/8443/10000** — it can't use a `svc:`, so it can't have the
+  pretty hostname. It lives in the node's own serve config (shared with the root,
+  e.g. a report on :443), so it can be overwritten; the `.timer` re-asserts it
+  every 5 min. Requires the `funnel` nodeAttr on `tag:server` (see
+  `policy-grant.hujson`) — a tagged node doesn't inherit the default
+  `autogroup:member` grant. **This puts the app on the public internet** (it is
+  auth-gated by Google sign-in, but the login page is reachable by anyone).
 
 ## What gets installed
 
@@ -30,7 +45,7 @@ Three systemd **user** units (rendered from the templates here by `setup.sh`):
 | Unit | Role |
 |------|------|
 | `football-survivor.service` | Runs `node server.js` on `127.0.0.1:3910`. |
-| `football-survivor-tailscale.service` | Asserts `svc:football-survivor` -> `--https=443` -> local app. |
+| `football-survivor-tailscale.service` | Asserts `svc:football-survivor` (tailnet) **and** Funnel on `:8443` (public) -> local app. |
 | `football-survivor-tailscale.timer` | Re-asserts every 5 min (self-heals if ever cleared). |
 
 ## One-time prerequisites
@@ -81,11 +96,15 @@ Share → Add to Home Screen → open from the icon → Settings → Enable push
 ## Verify
 
 ```
-# Dedicated service config (this is what you care about):
+# Dedicated service config (tailnet-only):
 tailscale serve --service=svc:football-survivor status
 
-# Node-root serve config (the report) — untouched by any of the above:
+# Full serve/funnel config incl. the :8443 Funnel and the node root (the report):
 tailscale serve status
+tailscale funnel status
+
+# Public reachability (run anywhere, even off-tailnet):
+curl -sS -o /dev/null -w "HTTP %{http_code}\n" https://openclaw-server.tailbd9828.ts.net:8443
 
 systemctl --user status football-survivor.service \
   football-survivor-tailscale.service football-survivor-tailscale.timer
