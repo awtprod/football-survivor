@@ -2,7 +2,7 @@
 import * as crowd from '/crowd.js';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
-const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pct = (p) => p == null ? '—' : Math.round(p * 100) + '%';
 const state = { data: null, week: null, season: null, view: 'pick', filter: 'avail', open: null, sort: 'best', openPerson: null, chalk: null, entry: 0, objective: 'ev' };
 // My entries: d.myEntries (server) is one row per entry; picks per entry live in d.entryPicks[i]. Entry 0 is the default.
@@ -54,12 +54,12 @@ function render() {
   hideGate();
   $('#hdr').textContent = `Survivor · ${d.season}`;
   const sel = $('#weekSel'); sel.innerHTML = Array.from({ length: 18 }, (_, i) => `<option value="${i + 1}" ${i + 1 === d.week ? 'selected' : ''}>Week ${i + 1}</option>`).join('');
-  state.chalk = null;
-  // Sequential calls meant a throw in one view silently killed every later one - including
-  // Settings, which owns Sign out and the workbook upload.
-  for (const f of [renderPick, renderPool, renderSettings]) {
-    try { f(); } catch (e) { console.error(f.name, e); }
-  }
+  // Fresh data invalidates the transient projection overrides (sliders/toggles): otherwise a
+  // week switch would keep applying last week's chalk/lambda and "show all" expansions.
+  state.chalk = null; state.lambda = null; state.mustDiffer = null; state.pfAll = false; state.invAll = false;
+  // Each builder is guard()-wrapped (see the Shell section), so a throw in one view no longer kills
+  // the rest — including Settings, which owns Sign out and the workbook upload.
+  for (const f of [renderPick, renderPool, renderSettings]) f();
   maybeOnboard();
 }
 
@@ -81,12 +81,12 @@ function renderPick() {
   rows.sort((a, b) => srank(a) - srank(b));
   const seen = new Set();
   let html = entryChips(d) + `<div class="card"><div class="deadline"><div><div class="big">${myPick ? `${esc(myPick.team)} locked` : 'No pick yet'}${entries(d).length > 1 ? ` <small style="color:var(--muted);font-weight:400">· ${esc(me.name)}${me.alive ? '' : ' (eliminated)'}</small>` : ''}</div><div class="sub">${dl ? `Pick by ${dl.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${cd}` : ''}</div></div>
-    ${myPick ? `<span class="pill ${myPick.result === 'win' ? 'good' : myPick.result === 'loss' ? 'bad' : 'info'}">${myPick.result ? myPick.result.toUpperCase() + (myPick.score ? ' ' + myPick.score : '') : 'PENDING'}</span>` : `<span class="pill warn">OPEN</span>`}</div>
+    ${myPick ? `<span class="pill ${myPick.result === 'win' ? 'good' : myPick.result === 'loss' ? 'bad' : 'info'}">${myPick.result ? esc(myPick.result.toUpperCase()) + (myPick.score ? ' ' + esc(myPick.score) : '') : 'PENDING'}</span>` : `<span class="pill warn">OPEN</span>`}</div>
     ${d.portfolio?.best ? `<div class="note" style="margin-top:8px">Portfolio (joint EV) suggests <b>${esc(d.portfolio.best.teams[state.entry] || '—')}</b> for ${esc(me.name)} this week${d.portfolio.hedge && d.portfolio.hedge !== d.portfolio.best ? ` · hedge row: ${d.portfolio.hedge.teams.map(esc).join(' / ')} (wipeout ${pct(d.portfolio.hedge.wipeout)} vs ${pct(d.portfolio.best.wipeout)})` : ''} · details in the Pool tab</div>` : d.plan?.plan?.length ? `<div class="note" style="margin-top:8px">Season plan suggests <b>${esc(d.plan.plan[0].team || '—')}</b> this week · projected survival to W18 ${pct(d.plan.survival)}</div>` : ''}</div>`;
   if (d.pool) {
     const P = d.pool; const hist = P.history[d.week - 1];
     const top = Object.entries(P.projected?.pct || P.share).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([t, v]) => `${esc(t)} ${pct(v)}`).join(' · ');
-    const last = hist ? Object.entries(hist.teams).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([t, n]) => `${esc(t)} ${Math.round(n / hist.n * 100)}%`).join(' · ') : null;
+    const last = hist?.n ? Object.entries(hist.teams).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([t, n]) => `${esc(t)} ${Math.round(n / hist.n * 100)}%`).join(' · ') : null;
     html += `<div class="card"><h2>Pool · ${P.alive} of ${P.total} entries alive</h2>
       <div class="note">Projected pool picks this week <span class="est">estimate</span>: <b>${top || '—'}</b>${last ? `<br>Last week actual: ${last}` : ''}<br><small style="color:var(--muted)">Full projection & prior details in the Pool tab.${P.unknown?.length ? ` <span style="color:var(--warn)">Unrecognized: ${esc(P.unknown.slice(0, 5).join(', '))}</span>` : ''}</small></div></div>`;
   }
@@ -117,7 +117,7 @@ function renderPick() {
         <dt>Market (vig-free)</dt><dd>${pct(r.market)} ${r.book ? `via ${esc(r.book)}` : ''}</dd>
         <dt>Elo model</dt><dd>${pct(r.elo)} (${r.eloRating} vs ${r.oppElo}${r.home && !r.neutral ? ', +HFA' : ''})</dd>
         <dt>Rest</dt><dd>${r.rest ?? '?'} days vs ${r.oppRest ?? '?'}</dd>
-        <dt>Injuries</dt><dd>${r.injuries.length ? esc(r.injuries.join('; ')) : 'none notable'}${r.injuryPenalty ? ` (−${(r.injuryPenalty * 100).toFixed(1)} pts raw)` : ''}</dd>
+        <dt>Injuries</dt><dd>${r.injuries?.length ? esc(r.injuries.join('; ')) : 'none notable'}${r.injuryPenalty ? ` (−${(r.injuryPenalty * 100).toFixed(1)} pts raw)` : ''}</dd>
         ${r.ev != null ? `<dt>Projected pool</dt><dd>~${pct(r.crowd)} of ${d.pool.projected.rivals} alive rivals projected here${r.consensus != null ? ` (SurvivorGrid ${pct(r.consensus)})` : ''} · ${r.avail} can still take ${esc(r.team)} · EV ${r.ev.toFixed(2)} · leverage ${r.leverage.toFixed(2)}× (${r.leverage > 1.05 ? 'a win thins the field' : r.leverage < 0.95 ? 'riding with the crowd' : 'neutral'})</dd>` : r.leverage != null ? `<dt>Projected pool</dt><dd>~${pct(r.crowd)} of alive entries projected here · leverage ${r.leverage.toFixed(2)}×</dd>` : ''}
         <dt>Future value</dt><dd>${r.futureStrong} more weeks ≥70% · best later spot ${pct(r.futureBest)}</dd>
         <dt>Record</dt><dd>${esc(r.record || '0-0')}${r.form ? ` · form ${esc(r.form)}` : ''} ${r.broadcast ? '· ' + esc(r.broadcast) : ''}</dd></dl></div>`;
@@ -409,12 +409,28 @@ async function openOnboarding(rerun = false) {
   onb.name = crowd.stripEntryNo(existing[0] || '') || nameFromProfile(d.user);
   onb.count = Math.max(1, existing.length);
   onb.step = d.pool || rerun ? 'you' : 'sheet';
+  onb.lastFocus = document.activeElement;
   document.body.insertAdjacentHTML('beforeend', `<div class="ovl" id="onb"><div class="sheet" role="dialog" aria-modal="true" aria-label="Set up your entries"></div></div>`);
+  // A modal must keep keyboard focus inside itself and close on Escape; without a trap, Tab walks
+  // into the inert app behind the overlay. The listener lives on #onb, which survives the innerHTML
+  // redraws of .sheet, so it is attached once here.
+  $('#onb').addEventListener('keydown', trapOnboardKeys);
   drawOnboarding();
+  focusOnboarding();
   if (onb.names == null) { try { onb.names = (await api('/api/pool/names')).names || []; } catch { onb.names = []; } }
-  if (onb.open) { onbResolveCount(); drawOnboarding(); }
+  if (onb.open) { onbResolveCount(); drawOnboarding(); focusOnboarding(); }
 }
-function closeOnboarding() { onb.open = false; $('#onb')?.remove(); }
+const onbFocusable = () => $$('#onb button, #onb input, #onb [href], #onb [tabindex]:not([tabindex="-1"])').filter((el) => !el.disabled && el.offsetParent !== null);
+function focusOnboarding() { const f = onbFocusable(); if (f.length && !$('#onb')?.contains(document.activeElement)) f[0].focus(); }
+function trapOnboardKeys(e) {
+  if (e.key === 'Escape') { e.preventDefault(); return closeOnboarding(); }
+  if (e.key !== 'Tab') return;
+  const f = onbFocusable(); if (!f.length) return;
+  const first = f[0], last = f[f.length - 1], a = document.activeElement;
+  if (e.shiftKey && (a === first || !$('#onb').contains(a))) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && a === last) { e.preventDefault(); first.focus(); }
+}
+function closeOnboarding() { onb.open = false; $('#onb')?.remove(); if (onb.lastFocus?.focus) { try { onb.lastFocus.focus(); } catch { /* gone from DOM */ } } onb.lastFocus = null; }
 
 function drawOnboarding() {
   const el = $('#onb .sheet'); if (!el) return;
@@ -497,4 +513,9 @@ $('#gateRetry').onclick = () => location.reload();
 // Returning to an installed PWA after signing in elsewhere should heal itself rather than
 // stranding the user on the gate.
 document.addEventListener('visibilitychange', () => { if (!document.hidden && !state.data) load(); });
+// A view builder throwing on one bad field must not leave the tab wedged: click handlers re-render
+// by calling these directly, so guard the bindings themselves. Every later reference — the render()
+// dispatch and every handler alike — then goes through the same isolation.
+const guard = (fn) => function guarded(...a) { try { return fn.apply(this, a); } catch (e) { console.error(fn.name, e); } };
+renderPick = guard(renderPick); renderPool = guard(renderPool); renderSettings = guard(renderSettings);
 load();

@@ -35,8 +35,12 @@ let shared = { key: '', at: 0, value: null, inflight: null, inflightKey: '' };
 
 async function sharedAnalysis(season, week, force = false) {
   const key = `${season}-${week}`;
-  if (!force && shared.key === key && Date.now() - shared.at < 10 * 60e3) return shared.value;
-  // Single-flight: ten people tapping refresh must not mean ten Elo recomputes over 6000 games.
+  const age = shared.key === key ? Date.now() - shared.at : Infinity;
+  if (!force && age < 10 * 60e3) return shared.value;
+  // A forced refresh still cannot recompute Elo over 6000 games more than once a minute per week:
+  // any signed-in user can pass ?refresh, so an unthrottled force is a cheap self-DoS.
+  if (force && age < 60e3) return shared.value;
+  // Single-flight: ten people tapping refresh (forced or not) share one recompute, never ten.
   if (shared.inflight && shared.inflightKey === key) return shared.inflight;
   const p = (async () => {
     const [games, espnGames, injuries, teams] = await Promise.all([
@@ -246,13 +250,17 @@ async function reminderTick() {
           const fireAt = deadline.getTime() - lead * 3600e3;
           const key = `${season}-${week}-${lead}`;
           if (now < fireAt || now >= fireAt + 2 * 3600e3 || m.reminded[key]) continue;
-          store.save(() => { m.reminded[key] = now; });
-          if (!missing.length) continue; // every entry picked -> no nag
+          // Do NOT burn the key when there is nothing to send: leaving it unmarked means an entry
+          // that gets un-picked later this window still gets nagged, and a transient push failure
+          // is retried on the next tick (within the 2h window) rather than silently dropped.
+          if (!missing.length) continue; // every entry picked -> no nag, key left open
           const a = base ? userAnalysis({ uid, lid, season, week, base }) : null;
           const top = a?.rows.filter((r) => !r.used)[0];
           const when = lead === 0 ? 'now' : `in ${lead}h`;
           // Tag includes the league so two pools do not replace each other's notification.
-          await sendPush(uid, { title: `Survivor: Week ${week} pick${missing.length > 1 ? `s (${missing.length} entries)` : ''} due ${when}`, body: top ? `Top suggestion: ${top.team} vs ${top.opp} (${Math.round(top.prob * 100)}%)` : 'Open the app to lock your pick.', url: '/', tag: `survivor-${lid}-w${week}` });
+          const sent = await sendPush(uid, { title: `Survivor: Week ${week} pick${missing.length > 1 ? `s (${missing.length} entries)` : ''} due ${when}`, body: top ? `Top suggestion: ${top.team} vs ${top.opp} (${Math.round(top.prob * 100)}%)` : 'Open the app to lock your pick.', url: '/', tag: `survivor-${lid}-w${week}` });
+          if (!sent) continue; // every subscription failed -> retry next tick, do not mark done
+          store.save(() => { m.reminded[key] = now; });
           console.log(`[reminder] ${uid} week ${week} lead ${lead}h`);
         }
       }
@@ -267,12 +275,17 @@ setInterval(reminderTick, 5 * 60e3); reminderTick();
 
 // --- HTTP ---
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.png': 'image/png', '.svg': 'image/svg+xml' };
+// The app loads no third-party script; scripts/styles/XHR are same-origin only. Team logos come
+// from ESPN over https (img-src). Inline style="" attributes need 'unsafe-inline' for styles.
+const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+  + "img-src 'self' https: data:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; "
+  + "base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 const json = (res, code, obj) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); };
 const body = (req) => new Promise((ok, bad) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e5) bad(new Error('too large')); }); req.on('end', () => { try { ok(b ? JSON.parse(b) : {}); } catch (e) { bad(e); } }); });
 const VALID_TEAM = /^[A-Z]{2,3}$/;
 
 // --- auth ---
-const esc = (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const esc = (x) => String(x).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const parseCookies = (h) => Object.fromEntries(String(h || '').split(';').map((c) => {
   const i = c.indexOf('='); if (i < 0) return null;
   try { return [c.slice(0, i).trim(), decodeURIComponent(c.slice(i + 1).trim())]; } catch { return null; }
@@ -334,7 +347,7 @@ async function authRoute(req, res, url) {
   if (url.pathname === '/auth/callback') {
     const clear = setCookie('sv_oauth', '', { maxAge: 0, path: '/auth' });
     const deny = (code, title, msg) => {
-      res.writeHead(code, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'set-cookie': clear });
+      res.writeHead(code, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': CSP, 'set-cookie': clear });
       res.end(page(title, msg, '<p><a href="/auth/login">Try again</a></p>'));
     };
     const oerr = url.searchParams.get('error');
@@ -503,7 +516,9 @@ http.createServer(async (req, res) => {
     p = path.normalize(p).replace(/^(\.\.[/\\])+/, '');
     const f = path.join(PUB, p);
     if (!f.startsWith(PUB) || !existsSync(f)) { res.writeHead(404); return res.end('not found'); }
-    res.writeHead(200, { 'content-type': MIME[path.extname(f)] || 'application/octet-stream', 'cache-control': /\.(html|js|webmanifest)$/.test(p) ? 'no-cache' : 'max-age=86400' });
+    const hdrs = { 'content-type': MIME[path.extname(f)] || 'application/octet-stream', 'cache-control': /\.(html|js|webmanifest)$/.test(p) ? 'no-cache' : 'max-age=86400' };
+    if (path.extname(f) === '.html') hdrs['content-security-policy'] = CSP;
+    res.writeHead(200, hdrs);
     res.end(readFileSync(f));
   } catch (e) { const code = e instanceof SyntaxError || e.message === 'too large' ? 400 : 500; if (code === 500) console.error(req.method, url.pathname, e); json(res, code, { error: e.message }); }
 }).listen(PORT, '127.0.0.1', () => console.log(`survivor listening on http://127.0.0.1:${PORT}`));

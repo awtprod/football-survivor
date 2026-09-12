@@ -44,6 +44,13 @@ test('EV: with identical win probs the less popular team has the higher EV; oppo
   assert.ok(ev.A > 0 && ev.B < 2);
   const flat = c.survivorEV({ teams: ['A', 'B'], pct: { A: 0.5, B: 0.5 }, winProb: { A: 0.6, B: 0.6 } });
   assert.ok(Math.abs(flat.ev.A - flat.ev.B) < 1e-12);
+  // Hand-computed asymmetric case (no opponents), pinning the exact arithmetic so an implementation
+  // that ignored winProb or pct could not pass: surv = .6·.8 + .4·.5 = .68;
+  // ev.A = .8·.68/(.6 + .4·.5) = .544/.80 = .68 ; ev.B = .5·.68/(.4 + .6·.8) = .34/.88.
+  const h = c.survivorEV({ teams: ['A', 'B'], pct: { A: 0.6, B: 0.4 }, winProb: { A: 0.8, B: 0.5 } });
+  assert.ok(Math.abs(h.surv - 0.68) < 1e-12, `surv ${h.surv}`);
+  assert.ok(Math.abs(h.ev.A - 0.68) < 1e-12, `ev.A ${h.ev.A}`);
+  assert.ok(Math.abs(h.ev.B - 0.34 / 0.88) < 1e-12, `ev.B ${h.ev.B}`);
 });
 
 test('parser: percentages, decimals, moneylines, headers, CSV and pasted grid', () => {
