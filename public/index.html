@@ -28,6 +28,9 @@ nav button { flex:1; background:none; border:0; color:var(--muted); font:inherit
 .pill.good { background:#173a25; color:#7fdc9f } .pill.warn { background:#3d2f10; color:#f0c25a } .pill.bad { background:#3f1c1c; color:#f2a0a0 } .pill.info { background:#1b2a3f; color:#8fbcf5 }
 .row { display:flex; align-items:center; gap:10px; padding:10px 0; border-top:1px solid var(--line) } .row:first-of-type { border-top:0 }
 .row.used { opacity:.42 } .row img { width:34px; height:34px; flex:none } .row .body { flex:1; min-width:0 } .row .title { font-weight:600 } .row .title small { margin-left:4px } .row .title small { color:var(--muted); font-weight:400 }
+.row.won, .row.lost, .row.live { border-radius:10px; padding-left:8px; padding-right:8px; margin:2px -8px; border-top:0 }
+.row.won { background:#12301d; box-shadow:inset 3px 0 0 #7fdc9f } .row.lost { background:#301616; box-shadow:inset 3px 0 0 #f2a0a0 } .row.live { background:#152538; box-shadow:inset 3px 0 0 #8fbcf5 }
+.row.won.used, .row.lost.used { opacity:1 }
 .row .meta { font-size:12px; color:var(--ink2); margin-top:2px }
 .prob { text-align:right; flex:none; width:64px } .prob b { font-size:19px; display:block } .prob span { font-size:11px; color:var(--muted) }
 .bar { height:4px; background:var(--card2); border-radius:2px; margin-top:6px; overflow:hidden } .bar i { display:block; height:100%; background:var(--s1); border-radius:2px }
@@ -43,6 +46,14 @@ svg.chart { width:100%; height:auto; display:block; touch-action:pan-y } .tip { 
 label.f { display:block; margin:8px 0; font-size:14px } label.f select, label.f input { width:100%; margin-top:4px; background:var(--card2); color:var(--ink); border:1px solid var(--line); border-radius:8px; padding:8px; font:inherit }
 .note { color:var(--muted); font-size:12px } .toast { position:fixed; left:50%; bottom:90px; transform:translateX(-50%); background:#000d; color:#fff; padding:10px 14px; border-radius:10px; font-size:13px; z-index:20; display:none }
 .ev { font-weight:700 } .ev.up { color:var(--good) } .ev.dn { color:var(--bad) }
+.rstat { font-size:11px; color:var(--muted); margin-top:2px; font-variant-numeric:tabular-nums }
+details.fold { background:var(--card); border:1px solid var(--line); border-radius:14px; margin-bottom:12px; overflow:hidden }
+details.fold > summary { list-style:none; cursor:pointer; padding:14px; font-size:13px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); font-weight:600; display:flex; align-items:center; gap:8px }
+details.fold > summary::-webkit-details-marker { display:none }
+details.fold > summary::before { content:'▸'; color:var(--accent); font-size:11px; transition:transform .15s } details.fold[open] > summary::before { transform:rotate(90deg) }
+details.fold > .foldbody { padding:0 14px 14px }
+details.fold .card { border:0; padding:0; margin:0 0 14px; background:none } details.fold .card:last-child { margin-bottom:0 }
+tr.person { cursor:pointer } tr.person:hover td { background:var(--card2) } tr.person.open td { background:var(--card2) }
 th.s { cursor:pointer; user-select:none } th.s.on { color:var(--ink) }
 textarea.paste { width:100%; min-height:110px; background:var(--card2); color:var(--ink); border:1px solid var(--line); border-radius:8px; padding:8px; font:12px/1.4 ui-monospace,Menlo,monospace; margin-top:6px }
 input[type=range] { width:100%; margin:8px 0 } .stat { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--ink2) } .stat b { color:var(--ink); font-size:15px; display:block }
@@ -70,15 +81,11 @@ body.gated header, body.gated nav, body.gated main { display:none }
 <main>
   <section id="v-pick" class="view active"></section>
   <section id="v-pool" class="view"></section>
-  <section id="v-season" class="view"></section>
-  <section id="v-trends" class="view"></section>
   <section id="v-settings" class="view"></section>
 </main>
 <nav>
   <button data-v="pick" class="on"><svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>Pick</button>
   <button data-v="pool"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17.5" cy="9" r="2.5"/><path d="M15 14.5a5 5 0 0 1 6.5 4.5"/></svg>Pool</button>
-  <button data-v="season"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>Season</button>
-  <button data-v="trends"><svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>Trends</button>
   <button data-v="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings</button>
 </nav>
 <div id="gate" hidden><div class="gatecard">

@@ -55,8 +55,8 @@ test('each user gets their own record, and the first one adopts the league', asy
 test("one user's pick is invisible to the other", async () => {
   const st = await json(await as(A, '/api/state'));
   const season = st.season, week = st.week;
-  const team = st.rows.find((r) => !r.done)?.team;
-  assert.ok(team, 'need a pickable team');
+  const team = st.rows.find((r) => r.status === 'pre' && !r.used && new Date(r.date).getTime() > Date.now())?.team;
+  assert.ok(team, 'need a pickable team whose game has not started');
 
   const picked = await json(await as(A, '/api/pick', { method: 'POST', body: JSON.stringify({ season, week, team, entry: 0 }) }));
   assert.equal(picked.picks[week].team, team);
@@ -67,6 +67,15 @@ test("one user's pick is invisible to the other", async () => {
   const bState = await json(await as(B, '/api/state'));
   assert.equal(bState.picks[week], undefined, 'bob must not see alice’s pick');
   assert.equal(bState.rows.find((r) => r.team === team)?.used, false, 'nor have her team marked used');
+});
+
+test('a game that has already kicked off cannot be picked', async () => {
+  const st = await json(await as(A, '/api/state'));
+  const season = st.season, week = st.week;
+  const started = st.rows.find((r) => r.status !== 'pre' || new Date(r.date).getTime() <= Date.now());
+  if (!started) return; // no started game in the cached week; nothing to assert
+  const res = await as(A, '/api/pick', { method: 'POST', body: JSON.stringify({ season, week, team: started.team, entry: 0 }) });
+  assert.equal(res.status, 409, `picking ${started.team} (already started) must be rejected`);
 });
 
 test('settings are per user, not global', async () => {

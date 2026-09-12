@@ -66,6 +66,7 @@ function userAnalysis({ uid, lid, season, week, base }) {
     const fit = model.fitCrowdK(poolDoc.entries, base.projection, week);
     poolInfo = model.poolAnalysis({ entries: poolDoc.entries, projection: base.projection, week, rows, k: fit.k });
     poolInfo.fit = fit; poolInfo.importedAt = poolDoc.importedAt; poolInfo.fileName = poolDoc.fileName; poolInfo.unknown = poolDoc.unknown;
+    const wr = model.weekResults(base.projection); poolInfo.results = wr.won; poolInfo.weekComplete = wr.complete;
     poolInfo.projected = projectPool({ poolDoc, projection: base.projection, week, rows, sg, k: fit.k, settings });
     const P = poolInfo.projected;
     for (const r of rows) { r.crowd = P.pct[r.team] ?? 0; r.avail = P.avail[r.team] ?? 0; r.consensus = sg?.data?.[r.team]?.consensusPct ?? null; r.ev = P.ev[r.team] ?? r.prob; r.leverage = P.leverage[r.team] ?? 1;
@@ -97,7 +98,7 @@ function myEntries({ uid, lid, season, week, poolDoc, projection, settings }) {
     const app = store.picksFor(uid, lid, season, i);
     const used = new Set(Object.entries(app).filter(([w]) => +w < week).map(([, p]) => p.team));
     if (row) for (const [w, t] of Object.entries(row.picks)) if (+w < week) used.add(t);
-    const lost = Object.entries(app).find(([w, p]) => +w < week && p.result === 'loss');
+    const lost = Object.entries(app).find(([w, p]) => +w <= week && p.result === 'loss');
     const alive = !lost && (row ? row.alive : true);
     return { id: i, name: name || (i ? `Entry ${i + 1}` : 'Me'), used: [...used], alive, out: lost ? { week: +lost[0], team: lost[1].team } : row?.out || null, onSheet: !!row, picks: app };
   });
@@ -406,6 +407,14 @@ http.createServer(async (req, res) => {
       const picks = store.picksFor(me.uid, me.lid, season, entry);
       const dup = Object.entries(picks).find(([w, p]) => +w !== week && p.team === team);
       if (team && dup) return json(res, 409, { error: `${team} already used in week ${dup[0]}` });
+      // You cannot set or clear a pick once its game has kicked off (the weekly deadline does not cover early games).
+      const target = team || picks[week]?.team;
+      if (target) {
+        const games = await nfl.loadWeek(season, week).catch(() => []);
+        const g = games.find((x) => x.home === target || x.away === target);
+        if (team && !g) return json(res, 400, { error: `${team} is not playing in week ${week}` });
+        if (g && (g.status !== 'pre' || new Date(g.date).getTime() <= Date.now())) return json(res, 409, { error: `${target}'s game has already started` });
+      }
       const mem = store.membership(me.uid, me.lid);
       store.save(() => { mem.entryPicks[season] ??= {}; mem.entryPicks[season][entry] ??= {}; if (team) mem.entryPicks[season][entry][week] = { team, note: String(note || '').slice(0, 300), at: new Date().toISOString() }; else delete mem.entryPicks[season][entry][week]; });
       return json(res, 200, { picks: store.picksFor(me.uid, me.lid, season, 0), entryPicks: mem.entryPicks[season] });
