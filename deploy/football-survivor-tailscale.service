@@ -1,0 +1,33 @@
+# Football Survivor PWA — dedicated Tailscale Service assertion (systemd user unit)
+#
+# This is a TEMPLATE. Run deploy/setup.sh to render __PLACEHOLDERS__ and install
+# it to ~/.config/systemd/user/.
+#
+# WHY A DEDICATED SERVICE (svc:), NOT `tailscale serve` ON THE NODE ROOT:
+#   `tailscale serve` config attached to THIS NODE's own hostname
+#   (openclaw-server.__TAILNET__) is global and last-writer-wins — that is how
+#   the PWA got overwritten by another agent's report. A Tailscale *Service*
+#   (svc:football-survivor) is a separate, named endpoint with its own hostname
+#   (football-survivor.__TAILNET__) and its own config. A plain `tailscale serve`
+#   on the node root does NOT touch it, so the PWA can no longer be clobbered.
+#
+# The companion .timer re-runs this every few minutes, so the endpoint re-asserts
+# itself even if it is ever cleared.
+
+[Unit]
+Description=Assert Football Survivor's dedicated Tailscale Service (svc:football-survivor)
+Documentation=https://github.com/awtprod/football-survivor/blob/main/deploy/README.md
+# tailscaled is a system unit; this is ordering only.
+After=football-survivor.service tailscaled.service
+Wants=football-survivor.service
+
+[Service]
+Type=oneshot
+# Terminate TLS for football-survivor.__TAILNET__ and proxy to the local app.
+# Tailscale auto-provisions the cert for the service hostname (HTTPS is required
+# for the service worker and web-push to work). --bg applies the config and
+# returns; re-running is idempotent.
+ExecStart=__TAILSCALE_BIN__ serve --bg --service=svc:football-survivor --https=443 http://127.0.0.1:3910
+
+[Install]
+WantedBy=default.target

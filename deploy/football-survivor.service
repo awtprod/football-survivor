@@ -1,0 +1,31 @@
+# Football Survivor PWA — Node app (systemd user unit)
+#
+# This is a TEMPLATE. Run deploy/setup.sh to render the __PLACEHOLDERS__ and
+# install it to ~/.config/systemd/user/. You can also copy it by hand and
+# replace the placeholders yourself.
+#
+# Runs the Node server bound to 127.0.0.1:3910. Tailscale (see the companion
+# football-survivor-tailscale.service) is what exposes it to the tailnet.
+
+[Unit]
+Description=Football Survivor PWA (Node server on 127.0.0.1:3910)
+Documentation=https://github.com/awtprod/football-survivor/blob/main/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__APP_DIR__
+# PORT/DATA_DIR match the defaults in server.js; DATA_DIR is made absolute so
+# the store, caches and VAPID keys live with the app regardless of cwd.
+Environment=PORT=3910
+Environment=DATA_DIR=__APP_DIR__/data
+# Contact URI baked into web-push (not the origin); point it at the dedicated
+# service hostname so it stays meaningful after the move off the node root.
+Environment=VAPID_SUBJECT=https://football-survivor.__TAILNET__
+ExecStart=__NODE_BIN__ server.js
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
