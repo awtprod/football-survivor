@@ -105,8 +105,16 @@ the admin console if you want it fully gone.
   `tailscale set --operator=$USER` step, or run the serve command with `sudo`.
 - **Service never becomes reachable** — it's advertised but not yet approved;
   approve it in the admin console, and confirm the grant in your policy file.
-- **"must use a tag-based identity"** — the host is logged in as a user, not a
-  tag. Re-auth with `--advertise-tags=tag:server` (step 1).
+- **`service hosts must be tagged nodes`** (the tailscale unit fails to start) —
+  the host isn't tagged. Fix, in order: (1) add `tag:server` to `tagOwners` and
+  the grants in `policy-grant.hujson`, including a grant that keeps your own
+  access to `tag:server` so you don't lock yourself out; (2) on the host run
+  `sudo tailscale set --advertise-tags=tag:server` (or
+  `sudo tailscale up --advertise-tags=tag:server`); (3)
+  `systemctl --user restart football-survivor-tailscale.service`; (4) approve
+  the service in the admin console.
+- **"must use a tag-based identity"** — same cause as above; the host is logged
+  in as a user, not a tag.
 - **502 / connection refused at the service hostname** — the app unit isn't up.
   Check `systemctl --user status football-survivor.service` and that it's
   listening on `127.0.0.1:3910`.

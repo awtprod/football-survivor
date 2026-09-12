@@ -16,6 +16,15 @@
   },
 
   "grants": [
+    // IMPORTANT: tagging a node moves it from your user to the tag, so access
+    // is then governed by ACLs. Keep your OWN access to the box (SSH, HTTPS)
+    // or you can lock yourself out. Narrow "ip" to ["tcp:22","tcp:443"] if you
+    // don't want full access.
+    {
+      "src": ["autogroup:member"],
+      "dst": ["tag:server"],
+      "ip":  ["*"],
+    },
     // Let tailnet members reach the PWA's dedicated service over HTTPS.
     // Narrow "src" (e.g. to a specific user or group) if you don't want the
     // whole tailnet to have access.
