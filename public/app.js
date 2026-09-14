@@ -4,6 +4,9 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pct = (p) => p == null ? '—' : Math.round(p * 100) + '%';
+// Picks lock at kickoff, except this week, which the server keeps editable afterwards (see EDITABLE_WEEK
+// in server.js) so an entry can be corrected or backfilled. renderPick leaves its buttons enabled.
+const EDITABLE_WEEK = 1;
 const state = { data: null, week: null, season: null, view: 'pick', filter: 'avail', open: null, sort: 'best', openPerson: null, chalk: null, entry: 0, objective: 'ev' };
 // My entries: d.myEntries (server) is one row per entry; picks per entry live in d.entryPicks[i]. Entry 0 is the default.
 const entries = (d) => d.myEntries?.length ? d.myEntries : [{ id: 0, name: 'Me', used: [], alive: true, picks: d.picks }];
@@ -54,6 +57,7 @@ function renderPick() {
   const d = state.data; if (state.entry >= entries(d).length) state.entry = 0; const me = entries(d)[state.entry]; const myPicks = picksOf(d, state.entry); const myPick = myPicks[d.week]; const now = Date.now();
   const usedSet = new Set([...me.used, ...Object.entries(myPicks).filter(([w]) => +w !== d.week).map(([, p]) => p.team)]);
   d.rows.forEach((r) => { r.used = usedSet.has(r.team); });
+  const editable = d.week === EDITABLE_WEEK; // this week stays pickable after kickoff (server matches)
   const dl = d.deadline ? new Date(d.deadline) : null; const ms = dl ? dl - now : null;
   const cd = ms == null ? '' : ms < 0 ? 'Deadline passed' : ms < 36e5 ? `${Math.ceil(ms / 6e4)} min left` : ms < 864e5 ? `${Math.floor(ms / 36e5)}h ${Math.floor((ms % 36e5) / 6e4)}m left` : `${Math.floor(ms / 864e5)}d ${Math.floor((ms % 864e5) / 36e5)}h left`;
   const rows = d.rows.filter((r) => state.filter === 'all' || (state.filter === 'home' && r.home) || (state.filter === 'fav' && r.prob >= 0.6) || (state.filter === 'avail' && !r.used));
@@ -64,9 +68,9 @@ function renderPick() {
   // Games that already kicked off or finished can't be picked - sink them below the still-pickable teams
   // (stable sort keeps the chosen order within each group).
   const srank = (r) => (r.status === 'post' ? 2 : r.status === 'in' ? 1 : 0);
-  rows.sort((a, b) => srank(a) - srank(b));
+  if (!editable) rows.sort((a, b) => srank(a) - srank(b)); // when editable, kept-off games stay pickable in value order
   const seen = new Set();
-  let html = entryChips(d) + `<div class="card"><div class="deadline"><div><div class="big">${myPick ? `${esc(myPick.team)} locked` : 'No pick yet'}${entries(d).length > 1 ? ` <small style="color:var(--muted);font-weight:400">· ${esc(me.name)}${me.alive ? '' : ' (eliminated)'}</small>` : ''}</div><div class="sub">${dl ? `Pick by ${dl.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${cd}` : ''}</div></div>
+  let html = entryChips(d) + `<div class="card"><div class="deadline"><div><div class="big">${myPick ? `${esc(myPick.team)} ${editable ? 'picked' : 'locked'}` : 'No pick yet'}${entries(d).length > 1 ? ` <small style="color:var(--muted);font-weight:400">· ${esc(me.name)}${me.alive ? '' : ' (eliminated)'}</small>` : ''}</div><div class="sub">${editable ? `Week ${d.week} stays open — you can still change or backfill this pick` : (dl ? `Pick by ${dl.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${cd}` : '')}</div></div>
     ${myPick ? `<span class="pill ${myPick.result === 'win' ? 'good' : myPick.result === 'loss' ? 'bad' : 'info'}">${myPick.result ? esc(myPick.result.toUpperCase()) + (myPick.score ? ' ' + esc(myPick.score) : '') : 'PENDING'}</span>` : `<span class="pill warn">OPEN</span>`}</div>
     ${d.portfolio?.best ? `<div class="note" style="margin-top:8px">Portfolio (joint EV) suggests <b>${esc(d.portfolio.best.teams[state.entry] || '—')}</b> for ${esc(me.name)} this week${d.portfolio.hedge && d.portfolio.hedge !== d.portfolio.best ? ` · hedge row: ${d.portfolio.hedge.teams.map(esc).join(' / ')} (wipeout ${pct(d.portfolio.hedge.wipeout)} vs ${pct(d.portfolio.best.wipeout)})` : ''} · details in the Pool tab</div>` : d.plan?.plan?.length ? `<div class="note" style="margin-top:8px">Season plan suggests <b>${esc(d.plan.plan[0].team || '—')}</b> this week · projected survival to W18 ${pct(d.plan.survival)}</div>` : ''}</div>`;
   if (d.pool) {
@@ -97,7 +101,7 @@ function renderPick() {
       <div>${badge || (r.used ? '<span class="pill">already used</span>' : flags)}</div>
       <div class="bar"><i style="width:${Math.round(r.prob * 100)}%"></i></div></div>
       <div class="prob"><b>${pct(r.prob)}</b><span>win</span></div>
-      <button class="pick ${isPick ? 'on' : ''}" data-team="${esc(r.team)}" ${r.used || r.status !== 'pre' ? 'disabled' : ''}>${isPick ? 'Picked' : r.status === 'post' ? 'Final' : r.status === 'in' ? 'Started' : 'Pick'}</button></div>`;
+      <button class="pick ${isPick ? 'on' : ''}" data-team="${esc(r.team)}" ${r.used || (!editable && r.status !== 'pre') ? 'disabled' : ''}>${isPick ? 'Picked' : (!editable && r.status === 'post') ? 'Final' : (!editable && r.status === 'in') ? 'Started' : 'Pick'}</button></div>`;
     if (state.open === r.espn + r.team) {
       html += `<div class="detail"><b>Why ${pct(r.prob)}</b><dl>
         <dt>Market (vig-free)</dt><dd>${pct(r.market)} ${r.book ? `via ${esc(r.book)}` : ''}</dd>

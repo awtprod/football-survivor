@@ -288,6 +288,9 @@ const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inl
 const json = (res, code, obj) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); };
 const body = (req) => new Promise((ok, bad) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e5) bad(new Error('too large')); }); req.on('end', () => { try { ok(b ? JSON.parse(b) : {}); } catch (e) { bad(e); } }); });
 const VALID_TEAM = /^[A-Z]{2,3}$/;
+// Picks lock at each game's kickoff, except this week, which stays editable afterwards so entries can
+// be corrected or backfilled (e.g. a pool set up after the opener). The client mirrors this (renderPick).
+const EDITABLE_WEEK = 1;
 
 // --- identity (cookie only, no login) ---
 const parseCookies = (h) => Object.fromEntries(String(h || '').split(';').map((c) => {
@@ -383,12 +386,14 @@ http.createServer(async (req, res) => {
       const dup = Object.entries(picks).find(([w, p]) => +w !== week && p.team === team);
       if (team && dup) return json(res, 409, { error: `${team} already used in week ${dup[0]}` });
       // You cannot set or clear a pick once its game has kicked off (the weekly deadline does not cover early games).
+      // Week 1 is exempt: it stays editable after kickoff so a pick can be corrected or backfilled (e.g. a pool
+      // set up after the season opener). Every later week still locks each pick at its own game's kickoff.
       const target = team || picks[week]?.team;
       if (target) {
         const games = await nfl.loadWeek(season, week).catch(() => []);
         const g = games.find((x) => x.home === target || x.away === target);
         if (team && !g) return json(res, 400, { error: `${team} is not playing in week ${week}` });
-        if (g && (g.status !== 'pre' || new Date(g.date).getTime() <= Date.now())) return json(res, 409, { error: `${target}'s game has already started` });
+        if (week !== EDITABLE_WEEK && g && (g.status !== 'pre' || new Date(g.date).getTime() <= Date.now())) return json(res, 409, { error: `${target}'s game has already started` });
       }
       const mem = store.membership(me.uid, me.lid);
       store.save(() => { mem.entryPicks[season] ??= {}; mem.entryPicks[season][entry] ??= {}; if (team) mem.entryPicks[season][entry][week] = { team, note: String(note || '').slice(0, 300), at: new Date().toISOString() }; else delete mem.entryPicks[season][entry][week]; });

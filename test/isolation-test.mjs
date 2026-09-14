@@ -1,7 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, cpSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, cpSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -16,6 +16,16 @@ const A = 'alice@example.com';
 const B = 'bob@example.com';
 
 let proc, dir;
+// A finished game seeded into a later (non-editable) week so the kickoff-lock assertion is deterministic
+// online or off: cached() serves this untouched while `at` is fresh, so loadWeek(2026,3) never hits the
+// network. Week 3 is not the editable week, so a pick of this started game must still be refused.
+const LOCKED_WEEK = 3;
+const LOCKED_TEAM = 'KC';
+const LOCKED_WEEK_GAMES = [
+  { espn: 'x3', date: '2026-09-11T00:20:00Z', name: 'BUF @ KC', neutral: false,
+    status: 'post', statusDetail: 'Final', home: LOCKED_TEAM, away: 'BUF',
+    homeName: 'Kansas City Chiefs', awayName: 'Buffalo Bills', homeScore: 27, awayScore: 24 },
+];
 const as = (who, p, init = {}) => fetch(BASE + p, { ...init, headers: { 'X-Test-User': who, 'content-type': 'application/json', ...(init.headers || {}) } });
 const json = async (r) => { assert.equal(r.status, 200, `${r.url} -> ${r.status}`); return r.json(); };
 
@@ -31,6 +41,9 @@ before(async () => {
     const src = path.join(ROOT, 'data', f);
     if (existsSync(src)) cpSync(src, path.join(dir, f));
   }
+  // Seed a finished game in a non-editable week so the kickoff-lock test is deterministic without the
+  // network. Fresh `at` => cached() returns this as-is (see lib/nfl.js), so loadWeek never fetches.
+  writeFileSync(path.join(dir, `espn-2026-w${LOCKED_WEEK}.json`), JSON.stringify({ at: Date.now(), data: LOCKED_WEEK_GAMES }));
   proc = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: { PATH: process.env.PATH, HOME: process.env.HOME, PORT: String(PORT), DATA_DIR: dir, AUTH_DISABLED: '1' },
@@ -68,13 +81,27 @@ test("one user's pick is invisible to the other", async () => {
   assert.equal(bState.rows.find((r) => r.team === team)?.used, false, 'nor have her team marked used');
 });
 
-test('a game that has already kicked off cannot be picked', async () => {
-  const st = await json(await as(A, '/api/state'));
-  const season = st.season, week = st.week;
-  const started = st.rows.find((r) => r.status !== 'pre' || new Date(r.date).getTime() <= Date.now());
-  if (!started) return; // no started game in the cached week; nothing to assert
-  const res = await as(A, '/api/pick', { method: 'POST', body: JSON.stringify({ season, week, team: started.team, entry: 0 }) });
-  assert.equal(res.status, 409, `picking ${started.team} (already started) must be rejected`);
+test('a game that has already kicked off cannot be picked (outside the editable week)', async () => {
+  // Every week except the editable one locks each pick at its game's kickoff. Week 3 is seeded with a
+  // finished KC/BUF game (see before()), so picking the started team there must be refused. Week 1's
+  // exemption is covered separately below.
+  const res = await as(A, '/api/pick', { method: 'POST', body: JSON.stringify({ season: 2026, week: LOCKED_WEEK, team: LOCKED_TEAM, entry: 0 }) });
+  assert.equal(res.status, 409, `picking ${LOCKED_TEAM} in week ${LOCKED_WEEK} (already final) must be rejected`);
+});
+
+test('week 1 stays editable after its games have kicked off', async () => {
+  // Unlike every later week, week 1 can be corrected/backfilled once games are final (e.g. a pool set
+  // up after the opener). Pick a week-1 game that has already started, then clear it — both must succeed.
+  const st = await json(await as(A, '/api/state?season=2026&week=1'));
+  assert.equal(st.week, 1);
+  const started = st.rows.find((r) => (r.status !== 'pre' || new Date(r.date).getTime() <= Date.now()) && !r.used);
+  if (!started) return; // no started week-1 game cached; nothing to assert
+  const set = await as(A, '/api/pick', { method: 'POST', body: JSON.stringify({ season: 2026, week: 1, team: started.team, entry: 0 }) });
+  assert.equal(set.status, 200, `week 1 must accept ${started.team} even though its game has started`);
+  const after = await json(await as(A, '/api/state?season=2026&week=1'));
+  assert.equal(after.picks[1]?.team, started.team, 'the retroactive week-1 pick is stored');
+  const cleared = await as(A, '/api/pick', { method: 'POST', body: JSON.stringify({ season: 2026, week: 1, team: null, entry: 0 }) });
+  assert.equal(cleared.status, 200, 'a finished week-1 pick can also be cleared');
 });
 
 test('settings are per user, not global', async () => {
