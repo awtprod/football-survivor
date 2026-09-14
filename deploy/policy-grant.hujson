@@ -1,0 +1,47 @@
+// Football Survivor — dedicated Tailscale Service access grant.
+//
+// Paste the relevant pieces into your tailnet policy file
+// (https://login.tailscale.com/admin/acls). This is a REFERENCE snippet, not a
+// complete policy file — merge it into what you already have.
+//
+// Two things are required for a Tailscale Service:
+//   1. The HOST node must have a tag (Services require tag-based identity).
+//      If openclaw-server isn't tagged yet, own a tag and apply it, e.g.:
+//        tailscale up --advertise-tags=tag:server
+//   2. A grant that lets you REACH the service at svc:football-survivor.
+{
+  "tagOwners": {
+    // Whoever may assign tag:server to nodes. Adjust to your setup.
+    "tag:server": ["autogroup:admin"],
+  },
+
+  // Funnel (public, non-tailnet access) requires the "funnel" node attribute.
+  // The default policy grants it to autogroup:member, but a TAGGED node isn't a
+  // member — so add tag:server, or public serving on :8443 won't work.
+  "nodeAttrs": [
+    {
+      "target": ["autogroup:member", "tag:server"],
+      "attr":   ["funnel"],
+    },
+  ],
+
+  "grants": [
+    // IMPORTANT: tagging a node moves it from your user to the tag, so access
+    // is then governed by ACLs. Keep your OWN access to the box (SSH, HTTPS)
+    // or you can lock yourself out. Narrow "ip" to ["tcp:22","tcp:443"] if you
+    // don't want full access.
+    {
+      "src": ["autogroup:member"],
+      "dst": ["tag:server"],
+      "ip":  ["*"],
+    },
+    // Let tailnet members reach the PWA's dedicated service over HTTPS.
+    // Narrow "src" (e.g. to a specific user or group) if you don't want the
+    // whole tailnet to have access.
+    {
+      "src": ["autogroup:member"],
+      "dst": ["svc:football-survivor"],
+      "ip":  ["tcp:443"],
+    },
+  ],
+}

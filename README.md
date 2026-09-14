@@ -11,6 +11,15 @@ PORT=3910 node server.js         # or: systemctl --user {start,status,restart} f
 ```
 State lives in `data/store.json` (picks, push subscriptions, settings). Data caches and VAPID keys are in `data/` too. No API keys needed.
 
+### Serve it on the tailnet (dedicated Tailscale Service)
+The PWA is exposed under its **own** Tailscale Service, `svc:football-survivor`
+(`football-survivor.<tailnet>.ts.net`), rather than on the node's shared root —
+so another `tailscale serve` on the node (e.g. a report) can't overwrite it.
+```
+deploy/setup.sh                  # installs the app + service systemd user units, then approve svc:football-survivor in the admin console
+```
+See [`deploy/README.md`](deploy/README.md) for prerequisites (tagged host, operator, grant) and verification.
+
 ## Data sources (all free, fetched with timeouts and disk-cached fallback)
 - ESPN scoreboard: schedule, DraftKings moneyline/spread, records, live status
 - ESPN injuries: per-team report with status

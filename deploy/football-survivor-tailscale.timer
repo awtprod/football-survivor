@@ -1,0 +1,18 @@
+# Football Survivor PWA — periodic re-assert of the dedicated Tailscale Service.
+#
+# Self-healing: re-runs football-survivor-tailscale.service on a schedule so the
+# svc:football-survivor endpoint comes back if it is ever cleared. Because the
+# service config is namespaced under svc:, this never fights with `tailscale
+# serve` on the node's own hostname.
+
+[Unit]
+Description=Re-assert Football Survivor's dedicated Tailscale Service periodically
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=5min
+Persistent=true
+# Same base name as the .service, so it targets football-survivor-tailscale.service.
+
+[Install]
+WantedBy=timers.target

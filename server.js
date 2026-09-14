@@ -43,11 +43,18 @@ async function sharedAnalysis(season, week, force = false) {
   // Single-flight: ten people tapping refresh (forced or not) share one recompute, never ten.
   if (shared.inflight && shared.inflightKey === key) return shared.inflight;
   const p = (async () => {
-    const [games, espnGames, injuries, teams] = await Promise.all([
-      nfl.loadGames(), nfl.loadWeek(season, week), nfl.loadInjuries().catch((e) => { console.warn('injuries', e.message); return {}; }), nfl.loadTeams(),
+    // ESPN finals are overlaid for every played week, not just the current one: games.csv lags by
+    // hours and its disk cache by 6h more, so without this the pool grading/alive counts on any week
+    // view past the first finished week would go stale. Older weeks are all-final, so cache them a day.
+    const [games, espnWeeks, injuries, teams] = await Promise.all([
+      nfl.loadGames(),
+      Promise.all(Array.from({ length: week }, (_, i) => nfl.loadWeek(season, i + 1, i + 1 < week - 1 ? 24 * 3600e3 : undefined))),
+      nfl.loadInjuries().catch((e) => { console.warn('injuries', e.message); return {}; }), nfl.loadTeams(),
     ]);
+    const espnGames = espnWeeks[week - 1];
     const elo = model.computeElo(games);
     const projection = model.projectSeason({ nvGames: games, elo, season });
+    espnWeeks.forEach((g, i) => model.applyFinals(projection, g, i + 1));
     const trends = {};
     for (const t of Object.keys(teams)) trends[t] = (elo.history[t] || []).filter((h) => h.season >= season - 1).map((h) => ({ s: h.season, w: h.week, e: Math.round(h.elo) }));
     const value = { games, espnGames, injuries, teams, elo, projection, trends, calibration: model.calibration(games) };

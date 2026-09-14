@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   eloWinProb, mlToProb, marketHomeProb, spreadHomeProb, computeElo, calibration,
-  injuryPenalty, rateWeek, projectSeason, planSeason, weekResults, aliveEntries, fitCrowdK, poolAnalysis,
+  injuryPenalty, rateWeek, projectSeason, applyFinals, planSeason, weekResults, aliveEntries, fitCrowdK, poolAnalysis,
 } from '../lib/model.js';
 
 const approx = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
@@ -262,6 +262,27 @@ test('weekResults reports finished winners/losers and week completeness', () => 
   assert.equal(complete[1], false, 'a week with a pending game is not complete');
   assert.deepEqual(tie, {}, 'no ties in this fixture');
   assert.equal(weekResults(completeW1).complete[1], true, 'every game final -> complete');
+});
+
+test('applyFinals overlays ESPN final results onto a pending projection week', () => {
+  // DAL @ NYG is pending in games.csv (result still null), but ESPN's scoreboard says it ended 24-20 NYG.
+  // SEA/NE is also passed as (contradictorily) final to prove nflverse results are never overwritten.
+  const proj = structuredClone(partialW1);
+  const espnGames = [
+    { home: 'DAL', away: 'NYG', status: 'post', homeScore: 20, awayScore: 24, homeWinner: false, awayWinner: true },
+    { home: 'SEA', away: 'NE', status: 'post', homeScore: 10, awayScore: 17, homeWinner: false, awayWinner: true },
+    { home: 'SF', away: 'LAR', status: 'in', homeScore: 7, awayScore: 3, homeWinner: false, awayWinner: false },
+  ];
+  applyFinals(proj, espnGames, 1);
+  const { won, complete } = weekResults(proj);
+  assert.equal(won[1].DAL, false);
+  assert.equal(won[1].NYG, true);
+  assert.equal(proj.DAL[0].done, true);
+  assert.equal(complete[1], true, 'once ESPN has every game final the week is complete');
+  assert.equal(proj.SEA[0].won, true, 'a result nflverse already has is untouched');
+  assert.equal(proj.SF[0].done, true, 'a non-post ESPN status is ignored');
+  const [e] = aliveEntries([{ name: 'DAL backer', picks: { 1: 'DAL' } }], proj, 1);
+  assert.equal(e.alive, false, 'elimination no longer waits for games.csv');
 });
 
 test('a team on bye does not block week completeness', () => {
