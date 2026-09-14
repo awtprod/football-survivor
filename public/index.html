@@ -72,6 +72,7 @@ input[type=range] { width:100%; margin:8px 0 } .stat { display:flex; gap:14px; f
 #gate h2 { font-size:20px; margin:0 0 6px }
 #gate p { color:var(--muted); margin:0 0 18px }
 #gate .btn { display:block; text-decoration:none; padding:13px }
+#gate .legal { margin:16px 0 0 } #gate .legal a { color:var(--muted); font-size:12px }
 /* The gate covers a half-painted app; hiding the chrome stops it peeking through. */
 body.gated header, body.gated nav, body.gated main { display:none }
 </style>
@@ -93,6 +94,7 @@ body.gated header, body.gated nav, body.gated main { display:none }
   <p id="gateMsg">Sign in to see your picks.</p>
   <a class="btn primary" id="gateBtn" href="/auth/login">Sign in with Google</a>
   <button class="btn" id="gateRetry" style="margin-top:8px;width:100%">I signed in — reload</button>
+  <p class="legal"><a href="/privacy.html">Privacy Policy</a> · <a href="/terms.html">Terms of Service</a></p>
 </div></div>
 <div class="tip" id="tip"></div><div class="toast" id="toast"></div>
 <script type="module" src="/app.js"></script>
