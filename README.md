@@ -11,6 +11,9 @@ PORT=3910 node server.js         # or: systemctl --user {start,status,restart} f
 ```
 State lives in `data/store.json` (picks, push subscriptions, settings). Data caches and VAPID keys are in `data/` too. No API keys needed.
 
+### Identity (no login)
+There is no sign-in. On first contact the server mints an opaque, high-entropy identity cookie (`sv_id`, HttpOnly + SameSite=Lax, ~400-day life) and keys that browser's entries, picks and settings to it — so picks just persist per browser. Clearing this site's cookies/data starts a fresh, empty setup; there is no account to recover it from. The **first** identity the server ever sees adopts the shared pool as its **admin** (workbook upload, SurvivorGrid import); later visitors are ordinary members. Because a cookie is the whole identity, this is meant for a **trusted, private deployment** — the tailnet `svc:` exposure below, not a public Funnel. State-changing `/api` writes are additionally checked against `PUBLIC_ORIGIN` to block cross-origin requests. (For tests, `AUTH_DISABLED=1` swaps the cookie for an `X-Test-User` header and refuses to start on a non-loopback origin.)
+
 ### Serve it on the tailnet (dedicated Tailscale Service)
 The PWA is exposed under its **own** Tailscale Service, `svc:football-survivor`
 (`football-survivor.<tailnet>.ts.net`), rather than on the node's shared root —
@@ -46,9 +49,9 @@ All of this is an estimate of other people's behaviour and is labelled as such i
 - **Rival inventory**: alive rivals by elite teams still held; zero held = blocked.
 
 ## First-run setup
-Signing in says who you are; it cannot say which rows on the pool sheet are yours. A membership with no entry names opens a setup sheet over the app: the workbook first (only when none is imported, and upload is offered to the pool admin alone — everyone else is told to wait for it), then your name and how many entries you have. Setup writes the names in this pool's format: **one entry is the bare name** (`Ryan, Andrew`), **several are all numbered from 1** (`Ryan, Andrew #1`, `Ryan, Andrew #2`, …). That rule is `crowd.entryNames()`, the inverse of the `crowd.ownerOf()` / `crowd.stripEntryNo()` the projection already uses to group an owner's entries.
+The cookie says which browser you are; it cannot say which rows on the pool sheet are yours. A membership with no entry names opens a setup sheet over the app: the workbook first (only when none is imported, and upload is offered to the pool admin alone — everyone else is told to wait for it), then your name and how many entries you have. Setup writes the names in this pool's format: **one entry is the bare name** (`Ryan, Andrew`), **several are all numbered from 1** (`Ryan, Andrew #1`, `Ryan, Andrew #2`, …). That rule is `crowd.entryNames()`, the inverse of the `crowd.ownerOf()` / `crowd.stripEntryNo()` the projection already uses to group an owner's entries.
 
-The name field is prefilled with `family_name, given_name` from the Google `profile` scope the sign-in already requests — but only as a starting point, since the sheet is what the pool admin typed: about 12% of this pool's owners are handles rather than `Last, First`, and `Acosta, E` will never match "Acosta, Elias" exactly. Typing two or more characters searches the league's workbook and suggests owners with their entry counts, so picking `Ryan, Brendan · 3 entries` fills in both fields; the preview then marks each generated name **on the sheet** or **not on the sheet** before you save. Google cannot know your entry count — the sheet match can, which is why picking a suggestion sets it.
+You type the name you go by, since the sheet is what the pool admin typed: about 12% of this pool's owners are handles rather than `Last, First`, and `Acosta, E` will never match "Acosta, Elias" exactly. Typing two or more characters searches the league's workbook and suggests owners with their entry counts, so picking `Ryan, Brendan · 3 entries` fills in both the name and the count; the preview then marks each generated name **on the sheet** or **not on the sheet** before you save. Picking a suggestion is what sets the count, because the sheet match — not you — knows how many entries that name owns. (On **Re-run setup** the name and count are prefilled from your already-saved entries.)
 
 Saving sets the league setting `onboarded`, so setup does not come back; Settings → Pool projection → **Re-run setup** reopens it prefilled. Skipping sets the flag too. Any membership that already names an entry is treated as onboarded when it loads, so existing users and second leagues never see the sheet.
 
@@ -63,11 +66,11 @@ Server checks every 5 minutes. If the current week has no pick, it sends web-pus
 
 ## Test
 ```
-npm test   # projection, EV, parser, lookahead, joint-EV portfolio, SurvivorGrid scrape parser, ID-token verification
+npm test   # projection, EV, parser, lookahead, joint-EV portfolio, SurvivorGrid scrape parser, cookie identity + per-user store isolation
 node test/ui-test.mjs     # headless Chrome walkthrough: picks, filters, season, trends, push, offline
 BASE=http://127.0.0.1:3910 node test/pool-ui-test.mjs   # Pool tab: paste preview, chalk slider, sorting
 BASE=http://127.0.0.1:3911 node test/portfolio-ui-test.mjs   # two configured entries: per-entry picks, portfolio table, λ slider, season paths (picks week 1 then clears)
-# first-run setup: a signed-in user whose membership has no entry names; NOWB is a second server with no workbook
+# first-run setup: a user whose membership has no entry names; NOWB is a second server with no workbook
 BASE=http://127.0.0.1:3912 NOWB=http://127.0.0.1:3913 node test/onboarding-ui-test.mjs
 ```
 The UI tests other than the setup one assume entries are already configured — against a fresh membership the setup sheet covers the app, which is the point.

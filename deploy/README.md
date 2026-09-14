@@ -35,8 +35,11 @@ So the report and the PWA can coexist, and the PWA can't be clobbered again.
   e.g. a report on :443), so it can be overwritten; the `.timer` re-asserts it
   every 5 min. Requires the `funnel` nodeAttr on `tag:server` (see
   `policy-grant.hujson`) — a tagged node doesn't inherit the default
-  `autogroup:member` grant. **This puts the app on the public internet** (it is
-  auth-gated by Google sign-in, but the login page is reachable by anyone).
+  `autogroup:member` grant. **This puts the app on the public internet, and the app
+  has no login** — identity is just a per-browser cookie the server hands out on
+  first contact, and the *first* visitor becomes the pool admin. Only enable Funnel
+  if you understand that anyone with the URL can create an entry and pick; for a
+  private pool, prefer the tailnet-only (`svc:`) exposure above.
 
 ## What gets installed
 

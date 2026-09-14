@@ -6,7 +6,6 @@ import vm from 'node:vm';
 const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const functionSource = (start, end) => source.slice(source.indexOf(start), source.indexOf(end));
 const productionFunctions = [
-  functionSource('function nameFromProfile', '/** Workbook names grouped'),
   functionSource('function sheetOwners', 'const onSheet'),
   functionSource('function onbResolveCount', 'function maybeOnboard'),
   functionSource('async function openOnboarding', 'function closeOnboarding'),
@@ -19,7 +18,8 @@ const crowd = {
 
 async function openWith({ myEntries, names }) {
   const onb = { names, touched: false };
-  const state = { data: { settings: { myEntries }, user: { familyName: 'Ryan', givenName: 'Andrew' }, pool: true } };
+  // No login means no profile to prefill from; a fresh user opens with an empty name.
+  const state = { data: { settings: { myEntries }, user: { isAdmin: true }, pool: true } };
   const context = {
     onb, state, crowd,
     // openOnboarding now wires a focus trap; the stub only needs the DOM surface it touches.
@@ -29,9 +29,9 @@ async function openWith({ myEntries, names }) {
     drawOnboarding() {},
     api: async () => ({ names: ['Ryan, Andrew #1', 'Ryan, Andrew #2', 'Ryan, Andrew #3'] }),
   };
-  vm.runInNewContext(`${productionFunctions}; globalThis.openOnboarding = openOnboarding`, context);
+  vm.runInNewContext(`${productionFunctions}; globalThis.openOnboarding = openOnboarding; globalThis.onbResolveCount = onbResolveCount`, context);
   await context.openOnboarding(true);
-  return onb;
+  return { onb, resolveCount: context.onbResolveCount };
 }
 
 test('saved entry counts survive cached and fetched sheet inference', async () => {
@@ -40,19 +40,33 @@ test('saved entry counts survive cached and fetched sheet inference', async () =
     ['Ryan, Andrew #1', 'Ryan, Andrew #2', 'Ryan, Andrew #3'],
     null,
   ]) {
-    const result = await openWith({ myEntries: saved, names });
-    assert.equal(result.count, 2);
-    assert.equal(result.touched, true);
+    const { onb } = await openWith({ myEntries: saved, names });
+    assert.equal(onb.count, 2);
+    assert.equal(onb.touched, true);
   }
 });
 
-test('fresh users still infer their count from cached and fetched sheet names', async () => {
+test('a fresh user opens with an empty name and count 1 (nothing to prefill without a login)', async () => {
+  const { onb } = await openWith({ myEntries: [], names: ['Ryan, Andrew #1', 'Ryan, Andrew #2', 'Ryan, Andrew #3'] });
+  assert.equal(onb.name, '');
+  assert.equal(onb.count, 1);
+  assert.equal(onb.touched, false);
+});
+
+test('onbResolveCount reads the count off the loaded sheet (cached or fetched) for an untouched name', async () => {
+  // names supplied = the sheet was already cached; names null = openOnboarding fetches it from the
+  // server. onbResolveCount runs on open and after a workbook upload — i.e. while the name is still
+  // untouched — and either way the loaded sheet supplies the entry count.
   for (const names of [
     ['Ryan, Andrew #1', 'Ryan, Andrew #2', 'Ryan, Andrew #3'],
     null,
   ]) {
-    const result = await openWith({ myEntries: [], names });
-    assert.equal(result.count, 3);
-    assert.equal(result.touched, false);
+    const { onb, resolveCount } = await openWith({ myEntries: [], names });
+    assert.equal(onb.count, 1, 'nothing is inferred while the name is blank');
+    // An untouched name matching the sheet (as after a prefill or a fresh upload) adopts its count.
+    onb.name = 'Ryan, Andrew';
+    resolveCount();
+    assert.equal(onb.count, 3, 'the sheet (cached or fetched) decides the count');
+    assert.equal(onb.touched, false);
   }
 });
