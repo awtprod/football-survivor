@@ -20,6 +20,10 @@ WorkingDirectory=__APP_DIR__
 # the store, caches and VAPID keys live with the app regardless of cwd.
 Environment=PORT=3910
 Environment=DATA_DIR=__APP_DIR__/data
+# The public URL the browser uses. Identity is a per-browser cookie (no login), so
+# there is no OAuth redirect to configure — this is only used to reject cross-origin
+# writes: state-changing /api requests must carry a matching Origin header.
+Environment=PUBLIC_ORIGIN=https://football-survivor.__TAILNET__
 # Contact URI baked into web-push (not the origin); point it at the dedicated
 # service hostname so it stays meaningful after the move off the node root.
 Environment=VAPID_SUBJECT=https://football-survivor.__TAILNET__

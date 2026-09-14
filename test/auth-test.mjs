@@ -5,19 +5,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-// Boots the real server with throwaway state. Credentials are fake: every path exercised here
-// fails before any call to Google, and that is the point — the gate must not depend on the network.
+// Boots the real server with throwaway state. There is no login: identity is an opaque cookie the
+// server mints on first contact, so these tests exercise the cookie handshake, not any network call.
 const PORT = 3931;
 const BASE = `http://127.0.0.1:${PORT}`;
-const ENV = {
-  PORT: String(PORT),
-  PUBLIC_ORIGIN: BASE,
-  COOKIE_SECURE: '0',
-  GOOGLE_CLIENT_ID: 'test-client.apps.googleusercontent.com',
-  GOOGLE_CLIENT_SECRET: 'test-secret',
-  ALLOWLIST: 'me@example.com',
-  ADMIN_EMAIL: 'me@example.com',
-};
+const ENV = { PORT: String(PORT), PUBLIC_ORIGIN: BASE, COOKIE_SECURE: '0' };
 
 let proc, dir;
 
@@ -26,6 +18,13 @@ const spawnServer = (env) => spawn(process.execPath, ['server.js'], {
   env: { PATH: process.env.PATH, HOME: process.env.HOME, ...env },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
+
+const idCookie = (r) => (r.headers.getSetCookie().find((c) => c.startsWith('sv_id=')) || '');
+
+// The first identity the server ever mints is the pool admin. Because these tests share one server,
+// that happens in the very first request below; later tests reuse this exact cookie to prove the
+// admin adoption stuck to it (a freshly minted cookie here would be a second, non-admin user).
+let firstCookie = '';
 
 before(async () => {
   dir = mkdtempSync(path.join(tmpdir(), 'fs-auth-'));
@@ -39,105 +38,48 @@ before(async () => {
 
 after(() => { proc?.kill(); if (dir) rmSync(dir, { recursive: true, force: true }); });
 
-test('every /api route refuses an unauthenticated request', async () => {
-  for (const [p, init] of [
-    ['/api/state', {}],
-    ['/api/me', {}],
-    ['/api/pick', { method: 'POST', body: '{}' }],
-    ['/api/settings', { method: 'POST', body: '{}' }],
-    ['/api/sg', { method: 'POST', body: '{}' }],
-    ['/api/sg/fetch', { method: 'POST', body: '{}' }],
-    ['/api/pool', { method: 'POST', body: 'x' }],
-    ['/api/subscribe', { method: 'POST', body: '{}' }],
-    ['/api/test-push', { method: 'POST', body: '{}' }],
-  ]) {
-    const r = await fetch(BASE + p, init);
-    assert.equal(r.status, 401, `${p} should be 401, got ${r.status}`);
-  }
+test('a fresh client is minted an identity cookie and served its state', async () => {
+  const r = await fetch(`${BASE}/api/state`);
+  assert.equal(r.status, 200, 'no login gate — state is served straight away');
+  const c = idCookie(r);
+  assert.ok(c.startsWith('sv_id='), 'an sv_id cookie is set');
+  assert.match(c, /HttpOnly/);
+  assert.match(c, /SameSite=Lax/);
+  assert.match(c, /Max-Age=\d+/);
+  firstCookie = c.split(';')[0]; // this browser is the very first — i.e. the admin
 });
 
-test('the shell and health check stay public so the app can boot and show its gate', async () => {
+test('the shell and health check are public', async () => {
   assert.equal((await fetch(`${BASE}/`)).status, 200);
   assert.equal((await fetch(`${BASE}/app.js`)).status, 200);
   assert.equal((await fetch(`${BASE}/health`)).status, 200);
 });
 
-test('a forged or unknown session cookie is not a session', async () => {
-  const r = await fetch(`${BASE}/api/state`, { headers: { cookie: 'sv_session=deadbeefdeadbeef' } });
-  assert.equal(r.status, 401);
+test('the same cookie is a stable identity; the first user is the pool admin', async () => {
+  const cookie = firstCookie; // the identity minted by the very first request above
+  assert.ok(cookie);
+  // Re-using the cookie must not mint a new identity.
+  const me = await (await fetch(`${BASE}/api/me`, { headers: { cookie } })).json();
+  assert.equal(me.user.isAdmin, true, 'the first identity adopts the league as admin');
+  // Persist a pick and read it back through the same cookie.
+  await fetch(`${BASE}/api/pick`, { method: 'POST', headers: { cookie, origin: BASE, 'content-type': 'application/json' },
+    body: JSON.stringify({ season: 2026, week: 1, team: 'KC' }) });
+  const state = await (await fetch(`${BASE}/api/state?season=2026&week=1`, { headers: { cookie } })).json();
+  assert.equal(state.picks?.[1]?.team, 'KC', 'the pick is saved against the cookie identity');
 });
 
-test('a cross-origin write is refused before authentication is even considered', async () => {
+test('a second, separate cookie sees its own empty data and is not admin', async () => {
+  const r = await fetch(`${BASE}/api/me`); // no cookie -> fresh identity
+  const cookie = idCookie(r).split(';')[0];
+  const me = await (await fetch(`${BASE}/api/me`, { headers: { cookie } })).json();
+  assert.equal(me.user.isAdmin, false, 'later users are ordinary members');
+  const state = await (await fetch(`${BASE}/api/state?season=2026&week=1`, { headers: { cookie } })).json();
+  assert.equal(state.picks?.[1], undefined, 'the first user’s pick does not leak to a different cookie');
+});
+
+test('a cross-origin write is refused before identity is even considered', async () => {
   const r = await fetch(`${BASE}/api/pick`, { method: 'POST', headers: { origin: 'https://evil.example.com' }, body: '{}' });
   assert.equal(r.status, 403);
-});
-
-test('a same-origin write gets past the origin check and lands on the auth gate', async () => {
-  const r = await fetch(`${BASE}/api/pick`, { method: 'POST', headers: { origin: BASE }, body: '{}' });
-  assert.equal(r.status, 401, 'same-origin should reach the 401, not be refused as cross-origin');
-});
-
-test('/auth/login starts a PKCE flow and stashes state in a short-lived cookie', async () => {
-  const r = await fetch(`${BASE}/auth/login`, { redirect: 'manual' });
-  assert.equal(r.status, 302);
-  const u = new URL(r.headers.get('location'));
-  assert.equal(u.origin + u.pathname, 'https://accounts.google.com/o/oauth2/v2/auth');
-  assert.equal(u.searchParams.get('redirect_uri'), `${BASE}/auth/callback`);
-  assert.equal(u.searchParams.get('code_challenge_method'), 'S256');
-  assert.equal(u.searchParams.get('access_type'), null);
-  assert.ok(u.searchParams.get('state'));
-  assert.ok(u.searchParams.get('nonce'));
-
-  const setCookie = r.headers.getSetCookie().find((c) => c.startsWith('sv_oauth='));
-  assert.ok(setCookie, 'the in-flight auth state must be stashed');
-  assert.match(setCookie, /HttpOnly/);
-  assert.match(setCookie, /SameSite=Lax/); // Strict would not survive Google's redirect back
-  assert.match(setCookie, /Path=\/auth/);  // not sent with ordinary API calls
-  // The verifier must stay server-side; only its hash may travel to Google.
-  const stash = JSON.parse(Buffer.from(decodeURIComponent(setCookie.split('=')[1].split(';')[0]), 'base64url').toString());
-  assert.equal(stash.state, u.searchParams.get('state'));
-  assert.ok(!u.search.includes(stash.verifier));
-});
-
-test('/auth/login stashes only validated local redirects', async () => {
-  for (const [next, expected] of [
-    ['/settings?tab=pool#entries', '/settings?tab=pool#entries'],
-    ['https://evil.example', '/'], ['//evil.example', '/'], ['/\\evil.example', '/'], ['/\nevil', '/'],
-  ]) {
-    const r = await fetch(`${BASE}/auth/login?next=${encodeURIComponent(next)}`, { redirect: 'manual' });
-    const cookie = r.headers.getSetCookie().find((c) => c.startsWith('sv_oauth='));
-    const stash = JSON.parse(Buffer.from(decodeURIComponent(cookie.split('=')[1].split(';')[0]), 'base64url').toString());
-    assert.equal(stash.next, expected, next);
-  }
-});
-
-test('the callback refuses a mismatched state without contacting Google', async () => {
-  const login = await fetch(`${BASE}/auth/login`, { redirect: 'manual' });
-  const cookie = login.headers.getSetCookie().find((c) => c.startsWith('sv_oauth=')).split(';')[0];
-  const r = await fetch(`${BASE}/auth/callback?code=x&state=not-the-right-state`, { headers: { cookie }, redirect: 'manual' });
-  assert.equal(r.status, 400);
-  assert.match(await r.text(), /could not be verified/);
-});
-
-test('the callback refuses a code with no in-flight state at all', async () => {
-  const r = await fetch(`${BASE}/auth/callback?code=x&state=y`, { redirect: 'manual' });
-  assert.equal(r.status, 400);
-  assert.match(await r.text(), /expired/);
-});
-
-test('logout clears the cookie and is POST-only', async () => {
-  assert.equal((await fetch(`${BASE}/auth/logout`, { redirect: 'manual' })).status, 404, 'GET logout must not work');
-  const r = await fetch(`${BASE}/auth/logout`, { method: 'POST', headers: { origin: BASE }, redirect: 'manual' });
-  assert.equal(r.status, 204);
-  assert.match(r.headers.getSetCookie().find((c) => c.startsWith('sv_session=')), /Max-Age=0/);
-});
-
-test('a misconfigured server exits rather than starting unauthenticated', async () => {
-  const code = await new Promise((resolve) => {
-    const p = spawnServer({ PORT: '3932', DATA_DIR: dir });
-    p.on('exit', resolve);
-  });
-  assert.equal(code, 1, 'missing credentials must be a hard exit');
 });
 
 test('AUTH_DISABLED refuses to run on a non-loopback origin', async () => {
@@ -145,5 +87,5 @@ test('AUTH_DISABLED refuses to run on a non-loopback origin', async () => {
     const p = spawnServer({ ...ENV, PORT: '3933', DATA_DIR: dir, AUTH_DISABLED: '1', PUBLIC_ORIGIN: 'https://example.ts.net' });
     p.on('exit', resolve);
   });
-  assert.equal(code, 1, 'auth off on a public origin would publish everyone’s data');
+  assert.equal(code, 1, 'auth off on a public origin would let anyone impersonate anyone');
 });

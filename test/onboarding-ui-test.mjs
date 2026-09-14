@@ -1,13 +1,15 @@
-// First-run setup: a signed-in user whose membership has no entry names gets the setup sheet.
-// Walks profile prefill -> sheet search -> count -> save, and the admin/member split on the upload step.
-// Both servers run AUTH_DISABLED=1, which swaps Google for the x-test-* headers but keeps real store records.
+// First-run setup: a user whose membership has no entry names gets the setup sheet.
+// Walks name entry -> sheet search -> count -> save, and the admin/member split on the upload step.
+// There is no login, so nothing prefills the name at first open; the sheet still resolves the count.
+// Both servers run AUTH_DISABLED=1, which pins identity to the x-test-user header (in place of the
+// per-browser cookie) but keeps real store records.
 //   DATA_DIR=/tmp/fs-onb/data  PORT=3912 AUTH_DISABLED=1 node server.js   # workbook imported
 //   DATA_DIR=/tmp/fs-nowb/data PORT=3913 AUTH_DISABLED=1 node server.js   # no workbook
 //   BASE=http://127.0.0.1:3912 NOWB=http://127.0.0.1:3913 node test/onboarding-ui-test.mjs
 import puppeteer from 'puppeteer-core';
 const B = process.env.BASE || 'http://127.0.0.1:3912';
 const SHOTS = process.env.SHOTS || '/tmp/fs-onb/shots';
-const USER = { 'x-test-user': 'brendan@example.com', 'x-test-given-name': 'Brendan', 'x-test-family-name': 'Ryan' };
+const USER = { 'x-test-user': 'brendan@example.com' };
 const b = await puppeteer.launch({ executablePath: '/usr/bin/google-chrome', headless: true, args: ['--no-sandbox', '--disable-gpu'] });
 const errs = [];
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -22,15 +24,12 @@ async function newPage(headers, viewport = { width: 390, height: 844, deviceScal
 const p = await newPage(USER);
 await p.goto(B + '/', { waitUntil: 'networkidle0' });
 await p.waitForSelector('#onb .sheet', { timeout: 20000 }); await wait(400);
-ok('setup opens for a signed-in user with no entries', await p.$eval('#onb h2', (e) => e.innerText.includes('Set up your entries')));
-ok('name is prefilled "Last, First" from the Google profile claims', await p.$eval('#onbName', (e) => e.value) === 'Ryan, Brendan');
-// the sheet, not Google, decides how many entries that name owns
-ok('entry count is resolved from the sheet, not left at 1', await p.$eval('#onbCount button.on', (e) => e.innerText) === '3');
-ok('the prefilled name opens already verified', (await p.$eval('#onbPreview', (e) => e.innerText)).match(/on the sheet/g)?.length === 3);
+ok('setup opens for a user with no entries', await p.$eval('#onb h2', (e) => e.innerText.includes('Set up your entries')));
+ok('name starts empty — there is no login to prefill it from', await p.$eval('#onbName', (e) => e.value) === '');
+ok('count starts at 1 with nothing typed yet', await p.$eval('#onbCount button.on', (e) => e.innerText) === '1');
 await p.screenshot({ path: `${SHOTS}/01-open.png` });
 
-// the prefill is a starting point, not an answer: it is editable and the sheet still decides
-await p.$eval('#onbName', (el) => { el.value = ''; el.dispatchEvent(new Event('input', { bubbles: true })); });
+// the name is typed by hand, and the sheet — not any profile — verifies it and its entries
 await p.type('#onbName', 'ryan', { delay: 30 }); await wait(300);
 const sug = await p.$$eval('#onbSugChips button', (b) => b.map((x) => x.innerText));
 console.log('suggestions', sug);
@@ -98,14 +97,14 @@ await dp.screenshot({ path: `${SHOTS}/07-desktop.png` }); await dp.close();
 // NOWB=http://127.0.0.1:3913 node test/onboarding-ui-test.mjs
 if (process.env.NOWB) {
   // first user into an empty league adopts it and is the admin
-  const ap = await newPage({ 'x-test-user': 'admin@example.com', 'x-test-given-name': 'Ada', 'x-test-family-name': 'Admin' });
+  const ap = await newPage({ 'x-test-user': 'admin@example.com' });
   await ap.goto(process.env.NOWB + '/', { waitUntil: 'networkidle0' });
   await ap.waitForSelector('#onb .sheet', { timeout: 20000 }); await wait(400);
   ok('without a workbook setup starts on the upload step', await ap.$eval('#onb h2', (e) => e.innerText) === 'Welcome');
   ok('the admin is offered the upload', !!(await ap.$('#onbUpload')));
   await ap.screenshot({ path: `${SHOTS}/08-nowb-admin.png` });
   await ap.click('#onbSkipSheet'); await ap.waitForSelector('#onbName'); await wait(300);
-  ok('admin prefill still comes from the profile', await ap.$eval('#onbName', (e) => e.value) === 'Admin, Ada');
+  ok('the name step opens empty for a fresh admin', await ap.$eval('#onbName', (e) => e.value) === '');
   await ap.$eval('#onbName', (el) => { el.value = 'Ryan, Andrew'; el.dispatchEvent(new Event('input', { bubbles: true })); });
   await ap.evaluate(() => document.querySelector('#onbCount button[data-n="2"]').click()); await wait(250);
   const npv = await ap.$eval('#onbPreview', (e) => e.innerText);

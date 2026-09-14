@@ -11,31 +11,18 @@ const picksOf = (d, i) => d.entryPicks?.[i] || (i === 0 ? d.picks : {}) || {};
 const entryChips = (d, onPick) => entries(d).length > 1 ? `<div class="chips" id="entryChips">${entries(d).map((e, i) => `<button data-e="${i}" class="${state.entry === i ? 'on' : ''}" ${e.alive ? '' : 'style="text-decoration:line-through"'}>${esc(e.name)}</button>`).join('')}</div>` : '';
 const toast = (m) => { const t = $('#toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => (t.style.display = 'none'), 2600); };
 
-class AuthError extends Error { constructor(m) { super(m || 'sign in required'); this.name = 'AuthError'; } }
 async function api(path, body) {
   const init = body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {};
   const r = await fetch(path, { ...init, credentials: 'same-origin' });
   const j = await r.json().catch(() => ({}));
-  // 401 is not an error to report, it is a state to render. 403 stays an ordinary failure: it means
-  // admin-only or a refused origin, not signed out.
-  if (r.status === 401) { showGate(); throw new AuthError(j.error); }
   if (!r.ok) { const e = new Error(j.error || r.statusText); e.status = r.status; throw e; }
   return j;
 }
-/** Every catch site funnels through here: once the gate is up, further toasts are just noise. */
-const fail = (e, prefix = '') => { if (e.name !== 'AuthError') toast(prefix + e.message); };
-function showGate(msg) {
-  state.data = null;
-  const g = $('#gate'); if (!g) return;
-  $('#gateMsg').textContent = msg || 'Sign in to see your picks.';
-  document.body.classList.add('gated'); g.hidden = false;
-}
-function hideGate() { document.body.classList.remove('gated'); const g = $('#gate'); if (g) g.hidden = true; }
+const fail = (e, prefix = '') => { toast(prefix + e.message); };
 /** POST the Knockout Pool workbook. Shared by Settings and first-run setup. Admin only, server-side. */
 async function uploadWorkbook(file) {
   const r = await fetch(`/api/pool?season=${state.data.season}&name=${encodeURIComponent(file.name)}`, { method: 'POST', body: file, credentials: 'same-origin' });
   const j = await r.json().catch(() => ({}));
-  if (r.status === 401) { showGate(); throw new AuthError(j.error); }
   if (!r.ok) { const e = new Error(j.error || r.statusText); e.status = r.status; throw e; }
   onb.names = null; // cached sheet names are stale now
   return j;
@@ -51,7 +38,6 @@ async function load(refresh = false) {
 }
 function render() {
   const d = state.data; if (!d) return;
-  hideGate();
   $('#hdr').textContent = `Survivor · ${d.season}`;
   const sel = $('#weekSel'); sel.innerHTML = Array.from({ length: 18 }, (_, i) => `<option value="${i + 1}" ${i + 1 === d.week ? 'selected' : ''}>Week ${i + 1}</option>`).join('');
   // Fresh data invalidates the transient projection overrides (sliders/toggles): otherwise a
@@ -332,10 +318,9 @@ function renderSettings() {
     <div class="note">Paste the SurvivorGrid grid (or a CSV: <code>team, winProb, consensusPct</code>) — or just hit Fetch to scrape it. Win% accepts 81%, 0.81 or a moneyline like −571; pick share accepts 29% or 0.29. Teams you leave out get a 0.5% floor.${d.sg ? `<br>Saved: ${sgRows} teams${d.sg.source ? ` from ${esc(d.sg.source)}` : ''} · ${new Date(d.sg.importedAt).toLocaleString()}` : '<br>Nothing saved for this week yet; the projection prior falls back to the win-prob softmax.'}</div>
     <textarea class="paste" id="sgText" placeholder="LAC, 0.81, 0.29&#10;JAX, 74%, 21%&#10;DET, -571, 16%"></textarea>
     <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn primary" id="sgFetch">Fetch from SurvivorGrid</button><button class="btn" id="sgPreview">Preview</button><button class="btn" id="sgSave">Save pasted</button>${d.sg ? '<button class="btn" id="sgClear">Clear</button>' : ''}</div><div id="sgOut"></div></div>
-    ${d.user ? `<div class="card"><h2>Account</h2>
-    <div class="note" style="margin-bottom:8px">Signed in as ${esc(d.user.email)}${d.user.isAdmin ? ' · admin' : ''}</div>
-    <button class="btn" id="signOut">Sign out</button>
-    <div class="note" style="margin-top:8px"><a href="/privacy.html">Privacy Policy</a> · <a href="/terms.html">Terms of Service</a></div></div>` : ''}
+    <div class="card"><h2>This device</h2>
+    <div class="note">Your entries, picks and settings are saved to this browser${d.user?.isAdmin ? ' · you are the pool admin' : ''}. There is no sign-in — clearing this site’s cookies or data starts a fresh, empty setup.</div>
+    <div class="note" style="margin-top:8px"><a href="/privacy.html">Privacy Policy</a> · <a href="/terms.html">Terms of Service</a></div></div>
     <div class="card"><h2>About the model</h2><div class="note">Win probability = 75% vig-free sportsbook moneyline (DraftKings via ESPN; nflverse closing lines as fallback) + 25% Elo (1999–present, margin-of-victory, home field, rest). Injuries from ESPN nudge the number slightly since lines already price most news. The season planner maximizes the product of weekly win probabilities across remaining weeks without reusing teams, so it will tell you to save elite teams for the weeks when nothing else is safe.</div></div>`;
   $('#saveS').onclick = async () => { try { await api('/api/settings', { reminderDay: +$('#rDay').value, reminderHour: +$('#rHour').value, reminderTz: $('#rTz').value.trim() }); toast('Saved'); load(); } catch (e) { fail(e); } };
   $('#savePool').onclick = async () => { const elite = $('#elite').value.toUpperCase().split(/[\s,]+/).filter(Boolean); if (elite.some((t) => !/^[A-Z]{2,3}$/.test(t))) return toast('Elite teams must be codes like KC');
@@ -353,10 +338,6 @@ function renderSettings() {
       toast(`Imported ${j.entries} entries · weeks with picks: ${j.weeks.join(', ') || 'none'}${j.unknown.length ? ` · unrecognized: ${j.unknown.slice(0, 3).join(', ')}` : ''}`); await load(); }
     catch (e) { fail(e, 'Import failed: '); } finally { $('#poolFile').value = ''; }
   };
-  const so = $('#signOut'); if (so) so.onclick = async () => {
-    try { await fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' }); } catch { /* leaving anyway */ }
-    location.reload();
-  };
   $('#testBtn').onclick = async () => { try { const r = await api('/api/test-push', {}); toast(`Sent to ${r.sent} device(s)`); } catch (e) { fail(e); } };
   bindSg();
 }
@@ -367,12 +348,6 @@ function b64(s) { const p = '='.repeat((4 - (s.length % 4)) % 4); const b = atob
 // are exact strings ("Ryan, Andrew #2") that have to match the workbook or nothing downstream lines
 // up, so setup asks for the name and the entry count and writes the names itself.
 const onb = { open: false, step: 'you', name: '', count: 1, names: null, busy: false, touched: false };
-
-/** "Last, First" from the Google profile claims, when both are present. */
-function nameFromProfile(user) {
-  const fam = String(user?.familyName || '').trim(), giv = String(user?.givenName || '').trim();
-  return fam && giv ? `${fam}, ${giv}` : '';
-}
 
 /** Workbook names grouped by owner: [{ base, count, names }], most entries first. */
 function sheetOwners() {
@@ -405,9 +380,7 @@ async function openOnboarding(rerun = false) {
   onb.open = true; onb.busy = false;
   const existing = (s.myEntries?.length ? s.myEntries : [s.myEntry || '']).filter(Boolean);
   onb.touched = existing.length > 0;
-  // Prefill from Google, but only as a starting point: the sheet is what the pool admin typed, and
-  // 12% of this pool's entries are handles rather than "Last, First".
-  onb.name = crowd.stripEntryNo(existing[0] || '') || nameFromProfile(d.user);
+  onb.name = crowd.stripEntryNo(existing[0] || '');
   onb.count = Math.max(1, existing.length);
   onb.step = d.pool || rerun ? 'you' : 'sheet';
   onb.lastFocus = document.activeElement;
@@ -510,9 +483,7 @@ $('#weekSel').onchange = (e) => { state.week = +e.target.value; load(); };
 $('#refresh').onclick = () => load(true);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
 setInterval(() => { if (state.view === 'pick' && state.data) renderPick(); }, 60e3);
-$('#gateRetry').onclick = () => location.reload();
-// Returning to an installed PWA after signing in elsewhere should heal itself rather than
-// stranding the user on the gate.
+// Reopening an installed PWA after a failed/empty load should heal itself rather than sitting blank.
 document.addEventListener('visibilitychange', () => { if (!document.hidden && !state.data) load(); });
 // A view builder throwing on one bad field must not leave the tab wedged: click handlers re-render
 // by calling these directly, so guard the bindings themselves. Every later reference — the render()

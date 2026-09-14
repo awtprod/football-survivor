@@ -5,9 +5,10 @@ import { mkdtempSync, rmSync, cpSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-// Two users against one server, driven through the real HTTP surface. AUTH_DISABLED swaps the Google
-// round trip for an X-Test-User header but changes nothing else: both identities get genuine store
-// records, so this exercises the per-user paths rather than stepping around them.
+// Two users against one server, driven through the real HTTP surface. AUTH_DISABLED pins identity to
+// the X-Test-User header (in place of the per-browser cookie) but changes nothing else: both
+// identities get genuine store records, so this exercises the per-user paths rather than stepping
+// around them. The header value becomes the uid `t:<value>`.
 const PORT = 3951;
 const BASE = `http://127.0.0.1:${PORT}`;
 const ROOT = path.resolve(import.meta.dirname, '..');
@@ -46,8 +47,6 @@ after(() => { proc?.kill(); if (dir) rmSync(dir, { recursive: true, force: true 
 test('each user gets their own record, and the first one adopts the league', async () => {
   const a = await json(await as(A, '/api/me'));
   const b = await json(await as(B, '/api/me'));
-  assert.equal(a.user.email, A);
-  assert.equal(b.user.email, B);
   assert.equal(a.user.isAdmin, true, 'the first user of an empty league becomes its admin');
   assert.equal(b.user.isAdmin, false);
 });
@@ -122,9 +121,9 @@ test('the store on disk keeps the two users apart', async () => {
   assert.equal(s.v, 2);
   const uids = Object.keys(s.users);
   assert.equal(uids.length, 2, `expected two users, got ${uids.join(', ')}`);
-  const [alice, bob] = uids.map((u) => s.users[u]).sort((x, y) => x.emailLower.localeCompare(y.emailLower));
-  assert.equal(alice.emailLower, A);
-  assert.equal(bob.emailLower, B);
+  // Identity is the cookie/header value, keyed as `t:<value>` under AUTH_DISABLED.
+  assert.deepEqual(uids.slice().sort(), [`t:${A}`, `t:${B}`]);
+  const alice = s.users[`t:${A}`], bob = s.users[`t:${B}`];
   assert.equal(alice.subscriptions.length, 1);
   assert.equal(bob.subscriptions.length, 0);
   assert.equal(alice.leagues.lg_default.settings.chalkFactor, 2.5);

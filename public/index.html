@@ -66,15 +66,6 @@ input[type=range] { width:100%; margin:8px 0 } .stat { display:flex; gap:14px; f
 .onb-act { display:flex; gap:8px; justify-content:flex-end; margin-top:14px } .onb-act .btn { flex:0 0 auto }
 @media (min-width:560px) { .ovl { align-items:center; padding:16px } .ovl .sheet { border-radius:16px; margin:auto } }
 .chips { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px } .chips button { background:var(--card2); border:1px solid var(--line); color:var(--ink2); border-radius:999px; padding:5px 11px; font:inherit; font-size:12px } .chips button.on { border-color:var(--accent); color:var(--ink) }
-#gate { position:fixed; inset:0; z-index:60; display:grid; place-items:center; background:var(--bg,#0e0f12); padding:24px }
-#gate[hidden] { display:none }
-#gate .gatecard { max-width:22rem; text-align:center }
-#gate h2 { font-size:20px; margin:0 0 6px }
-#gate p { color:var(--muted); margin:0 0 18px }
-#gate .btn { display:block; text-decoration:none; padding:13px }
-#gate .legal { margin:16px 0 0 } #gate .legal a { color:var(--muted); font-size:12px }
-/* The gate covers a half-painted app; hiding the chrome stops it peeking through. */
-body.gated header, body.gated nav, body.gated main { display:none }
 </style>
 </head>
 <body data-palette="#3987e5,#d95926,#199e70,#c98500">
@@ -89,13 +80,6 @@ body.gated header, body.gated nav, body.gated main { display:none }
   <button data-v="pool"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17.5" cy="9" r="2.5"/><path d="M15 14.5a5 5 0 0 1 6.5 4.5"/></svg>Pool</button>
   <button data-v="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings</button>
 </nav>
-<div id="gate" hidden><div class="gatecard">
-  <h2>Survivor Picks</h2>
-  <p id="gateMsg">Sign in to see your picks.</p>
-  <a class="btn primary" id="gateBtn" href="/auth/login">Sign in with Google</a>
-  <button class="btn" id="gateRetry" style="margin-top:8px;width:100%">I signed in — reload</button>
-  <p class="legal"><a href="/privacy.html">Privacy Policy</a> · <a href="/terms.html">Terms of Service</a></p>
-</div></div>
 <div class="tip" id="tip"></div><div class="toast" id="toast"></div>
 <script type="module" src="/app.js"></script>
 </body>
