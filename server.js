@@ -47,7 +47,7 @@ async function sharedAnalysis(season, week, force = false) {
       nfl.loadGames(), nfl.loadWeek(season, week), nfl.loadInjuries().catch((e) => { console.warn('injuries', e.message); return {}; }), nfl.loadTeams(),
     ]);
     const elo = model.computeElo(games);
-    const projection = model.projectSeason({ nvGames: games, elo, season });
+    const projection = model.applyFinals(model.projectSeason({ nvGames: games, elo, season }), espnGames, week);
     const trends = {};
     for (const t of Object.keys(teams)) trends[t] = (elo.history[t] || []).filter((h) => h.season >= season - 1).map((h) => ({ s: h.season, w: h.week, e: Math.round(h.elo) }));
     const value = { games, espnGames, injuries, teams, elo, projection, trends, calibration: model.calibration(games) };
