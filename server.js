@@ -327,11 +327,25 @@ function identify(req, res) {
 }
 const publicUser = (u) => ({ name: u.name || '', isAdmin: store.isAdminOf(u.uid, u.lid) });
 
-/** Lax cookies already stop cross-site form posts; this refuses them explicitly too. */
+/**
+ * Refuse cross-site writes. SameSite=Lax on the id cookie is the real defence — browsers don't send
+ * it on a cross-site POST/fetch — so this is belt-and-suspenders. The app is reached under several
+ * Tailscale names/ports (the node root, a Funnel port, the svc: host), so pinning ONE PUBLIC_ORIGIN
+ * would 403 legitimate writes from the others. Instead we allow a write whose Origin host matches the
+ * host the request actually arrived on: the trusted Tailscale proxy in front sets X-Forwarded-Host,
+ * and the server listens only on loopback, so a remote browser can't forge that header. PUBLIC_ORIGIN
+ * still matches explicitly for the no-proxy/local-dev case. Ports are ignored (Funnel uses a distinct
+ * one); a genuine cross-site page carries its own Origin host and is still refused.
+ */
+function hostOf(v) { try { const s = String(v).split(',')[0].trim(); return new URL(s.includes('://') ? s : `http://${s}`).hostname; } catch { return ''; } }
 function crossOrigin(req) {
   if (cfg.AUTH_DISABLED || req.method === 'GET' || req.method === 'HEAD') return false;
   const o = req.headers.origin;
-  return !!o && o !== cfg.PUBLIC_ORIGIN; // no Origin at all = a non-browser client (curl, tests)
+  if (!o) return false; // no Origin at all = a non-browser client (curl, tests)
+  if (o === cfg.PUBLIC_ORIGIN) return false;
+  const originHost = hostOf(o);
+  const servedHost = hostOf(req.headers['x-forwarded-host'] || req.headers.host);
+  return !(originHost && originHost === servedHost);
 }
 
 http.createServer(async (req, res) => {

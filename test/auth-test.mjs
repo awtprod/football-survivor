@@ -82,6 +82,25 @@ test('a cross-origin write is refused before identity is even considered', async
   assert.equal(r.status, 403);
 });
 
+test('a write from a proxied hostname that is not PUBLIC_ORIGIN is allowed when it matches the served host', async () => {
+  // The app sits behind Tailscale under several names/ports; a same-origin write there carries an
+  // Origin the reverse proxy corroborates via X-Forwarded-Host, even though it isn't PUBLIC_ORIGIN.
+  const origin = 'https://football-survivor.tailbd9828.ts.net';
+  const r = await fetch(`${BASE}/api/settings`, { method: 'POST',
+    headers: { origin, 'x-forwarded-host': 'football-survivor.tailbd9828.ts.net', 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(r.status, 200, 'a genuine same-origin write from any of the app’s proxied hosts is honoured');
+  // A Funnel port differing from the Origin port must not matter — the host still matches.
+  const r2 = await fetch(`${BASE}/api/settings`, { method: 'POST',
+    headers: { origin: `${origin}:8443`, 'x-forwarded-host': 'football-survivor.tailbd9828.ts.net:443', 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(r2.status, 200, 'the Funnel port does not make a same-host write look cross-site');
+});
+
+test('a spoofed Origin that does not match the served host is still refused', async () => {
+  const r = await fetch(`${BASE}/api/pick`, { method: 'POST',
+    headers: { origin: 'https://evil.example.com', 'x-forwarded-host': 'football-survivor.tailbd9828.ts.net' }, body: '{}' });
+  assert.equal(r.status, 403, 'the attacker’s own Origin host never matches the host we were reached on');
+});
+
 test('AUTH_DISABLED refuses to run on a non-loopback origin', async () => {
   const code = await new Promise((resolve) => {
     const p = spawnServer({ ...ENV, PORT: '3933', DATA_DIR: dir, AUTH_DISABLED: '1', PUBLIC_ORIGIN: 'https://example.ts.net' });
