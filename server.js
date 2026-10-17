@@ -92,9 +92,6 @@ function userAnalysis({ uid, lid, season, week, base }) {
     sources: ['ESPN scoreboard (DraftKings lines, records, status)', 'ESPN injuries', 'nflverse games.csv (1999-present results, closing lines, rest days)'] };
 }
 
-/** Names (lower-cased) of all my entries, so they never count as rivals. */
-function myNames(settings) { return new Set([settings.myEntry, ...(settings.myEntries || [])].map((n) => (n || '').trim().toLowerCase()).filter(Boolean)); }
-
 /**
  * My entries for the week: index i pairs settings.myEntries[i] (a workbook row, optional) with entryPicks[season][i].
  * used = teams burned before `week` in either source; alive = no recorded loss in the app and not eliminated on the sheet.
@@ -103,7 +100,7 @@ function myEntries({ uid, lid, season, week, poolDoc, projection, settings }) {
   const names = settings.myEntries?.length ? settings.myEntries : [settings.myEntry || ''];
   const sheet = poolDoc?.season === season && poolDoc.entries?.length ? model.aliveEntries(poolDoc.entries, projection, week) : [];
   return names.map((name, i) => {
-    const row = name ? sheet.find((e) => e.name.trim().toLowerCase() === name.trim().toLowerCase()) : null;
+    const row = pool.matchEntry(sheet, name);
     const app = store.picksFor(uid, lid, season, i);
     const used = new Set(Object.entries(app).filter(([w]) => +w < week).map(([, p]) => p.team));
     if (row) for (const [w, t] of Object.entries(row.picks)) if (+w < week) used.add(t);
@@ -119,9 +116,9 @@ function myEntries({ uid, lid, season, week, poolDoc, projection, settings }) {
  * Returns pct/avail/ev for this week plus the multi-week lookahead and rival inventory (all estimates).
  */
 function projectPool({ poolDoc, projection, week, rows, sg, k, settings }) {
-  const live = model.aliveEntries(poolDoc.entries, projection, week).filter((e) => e.alive);
-  const mine = myNames(settings);
-  const rivals = live.filter((e) => !mine.has(e.name.trim().toLowerCase())).map((e) => ({ ...e, owner: crowd.ownerOf(e.name) }));
+  const sheet = model.aliveEntries(poolDoc.entries, projection, week);
+  const mine = new Set([settings.myEntry, ...(settings.myEntries || [])].map((name) => pool.matchEntry(sheet, name)).filter(Boolean));
+  const rivals = sheet.filter((e) => e.alive && !mine.has(e)).map((e) => ({ ...e, owner: crowd.ownerOf(e.name) }));
   const teams = rows.map((r) => r.team); const winProb = {}, oppOf = {};
   for (const r of rows) { winProb[r.team] = sg?.data?.[r.team]?.winProb ?? r.prob; oppOf[r.team] = r.opp; }
   let consensus;
