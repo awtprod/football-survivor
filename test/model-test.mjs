@@ -375,3 +375,92 @@ test('poolAnalysis reconciles alive + eliminated === total and ships an entries 
   assert.equal(a.entries.find((e) => e.name === 'LAR backer').alive, false);
   assert.equal(a.entries.find((e) => e.name === 'SEA backer').alive, true);
 });
+
+/* ---------- Repeated-team elimination ---------- */
+const repeatProjection = {
+  JAX: [{ week: 5, done: true, won: true }, { week: 1, done: true, won: true },
+    { week: 10, done: true, won: true }, { week: 2, done: true, won: true }],
+  DET: [{ week: 5, done: true, won: true }, { week: 1, done: true, won: true }],
+};
+
+test('aliveEntries: repeat wins eliminate the unstarred official-email examples in Week 5', () => {
+  const entries = [
+    { name: 'Berthin, Christian', picks: { 5: 'JAX', 1: 'JAX' } },
+    { name: 'LaRaia, Colin', picks: { 5: 'DET', 1: 'DET' } },
+  ];
+  assert.deepEqual(aliveEntries(entries, repeatProjection, 6).map((e) => e.out),
+    [{ week: 5, team: 'JAX' }, { week: 5, team: 'DET' }]);
+});
+
+test('aliveEntries: unsorted picks and projections preserve the first chronological repeat', () => {
+  const [e] = aliveEntries([{ picks: { 10: 'JAX', 2: 'JAX', 1: 'JAX' } }], repeatProjection, 10);
+  assert.deepEqual(e.out, { week: 2, team: 'JAX' });
+});
+
+test('aliveEntries: an earlier loss or completed blank takes precedence over a later repeat', () => {
+  const projection = { ...repeatProjection, SEA: [{ week: 2, done: true, won: false }] };
+  const entries = [
+    { picks: { 5: 'JAX', 2: 'SEA', 1: 'JAX' } },
+    { picks: { 5: 'JAX', 2: null, 1: 'JAX' } },
+  ];
+  assert.deepEqual(aliveEntries(entries, projection, 5).map((e) => e.out),
+    [{ week: 2, team: 'SEA' }, { week: 2, team: null }]);
+});
+
+test('aliveEntries: a repeat precedes a later loss', () => {
+  const projection = { ...repeatProjection, SEA: [{ week: 10, done: true, won: false }] };
+  const [e] = aliveEntries([{ picks: { 10: 'SEA', 5: 'JAX', 1: 'JAX' } }], projection, 10);
+  assert.deepEqual(e.out, { week: 5, team: 'JAX' });
+});
+
+test('aliveEntries: a surviving tie still burns the team for subsequent weeks', () => {
+  const projection = { JAX: [{ week: 1, done: true, won: false, tie: true }, { week: 5, done: true, won: true }] };
+  const entries = [{ picks: { 1: 'JAX', 5: 'JAX' } }];
+  assert.equal(aliveEntries(entries, projection, 1)[0].alive, true);
+  assert.deepEqual(aliveEntries(entries, projection, 5)[0].out, { week: 5, team: 'JAX' });
+});
+
+test('aliveEntries: pending repeats eliminate, while unique pending picks and partial blanks survive', () => {
+  const projection = { JAX: [{ week: 1, done: true, won: true }, { week: 5, done: false, won: null }],
+    DET: [{ week: 5, done: false, won: null }] };
+  const entries = [
+    { picks: { 1: 'JAX', 5: 'JAX' } },
+    { picks: { 1: 'JAX', 5: 'DET' } },
+    { picks: { 1: 'JAX', 5: null } },
+  ];
+  const live = aliveEntries(entries, projection, 5);
+  assert.deepEqual(live[0].out, { week: 5, team: 'JAX' });
+  assert.equal(live[1].alive, true);
+  assert.equal(live[2].alive, true);
+});
+
+test('aliveEntries: future repeats never eliminate early, even with final results available', () => {
+  const entries = [{ picks: { 5: 'JAX', 1: 'JAX' } }];
+  assert.equal(aliveEntries(entries, repeatProjection, 4)[0].alive, true);
+  assert.deepEqual(aliveEntries(entries, repeatProjection, 5)[0].out, { week: 5, team: 'JAX' });
+});
+
+test('aliveEntries: reuse across entries is allowed and blanks do not burn a team', () => {
+  const entries = [{ picks: { 1: null, 5: 'JAX' } }, { picks: { 1: '', 5: 'JAX' } }];
+  const projection = { JAX: [{ week: 1, done: false, won: null }, { week: 5, done: true, won: true }] };
+  assert.ok(aliveEntries(entries, projection, 5).every((e) => e.alive));
+});
+
+test('aliveEntries: grading repeat picks does not mutate entries or projections', () => {
+  const entries = [{ name: 'repeat', picks: { 5: 'JAX', 1: 'JAX' } }];
+  const projection = structuredClone(repeatProjection);
+  const before = structuredClone({ entries, projection });
+  Object.freeze(entries[0].picks); Object.freeze(entries[0]); Object.freeze(entries);
+  for (const arr of Object.values(projection)) { arr.forEach(Object.freeze); Object.freeze(arr); }
+  Object.freeze(projection);
+  assert.deepEqual(aliveEntries(entries, projection, 5)[0].out, { week: 5, team: 'JAX' });
+  assert.deepEqual({ entries, projection }, before);
+});
+
+test('poolAnalysis: repeat eliminations reach pool counts and entry payloads', () => {
+  const entries = [{ name: 'repeat', picks: { 1: 'JAX', 5: 'JAX' } }, { name: 'valid', picks: { 1: 'JAX', 5: 'DET' } }];
+  const result = poolAnalysis({ entries, projection: repeatProjection, week: 5, rows: [] });
+  assert.equal(result.alive, 1);
+  assert.equal(result.eliminated, 1);
+  assert.deepEqual(result.entries[0].out, { week: 5, team: 'JAX' });
+});
