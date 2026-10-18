@@ -94,7 +94,7 @@ function userAnalysis({ uid, lid, season, week, base }) {
 
 /**
  * My entries for the week: index i pairs settings.myEntries[i] (a workbook row, optional) with entryPicks[season][i].
- * used = teams burned before `week` in either source; alive = no recorded loss in the app and not eliminated on the sheet.
+ * used = teams burned before `week` in either source; alive = no recorded loss or tie in the app and not eliminated on the sheet.
  */
 function myEntries({ uid, lid, season, week, poolDoc, projection, settings }) {
   const names = settings.myEntries?.length ? settings.myEntries : [settings.myEntry || ''];
@@ -104,9 +104,11 @@ function myEntries({ uid, lid, season, week, poolDoc, projection, settings }) {
     const app = store.picksFor(uid, lid, season, i);
     const used = new Set(Object.entries(app).filter(([w]) => +w < week).map(([, p]) => p.team));
     if (row) for (const [w, t] of Object.entries(row.picks)) if (+w < week) used.add(t);
-    const lost = Object.entries(app).find(([w, p]) => +w <= week && p.result === 'loss');
+    const lost = Object.entries(app).find(([w, p]) => +w <= week && (p.result === 'loss' || p.result === 'tie'));
     const alive = !lost && (row ? row.alive : true);
-    return { id: i, name: name || (i ? `Entry ${i + 1}` : 'Me'), used: [...used], alive, out: lost ? { week: +lost[0], team: lost[1].team } : row?.out || null, onSheet: !!row, picks: app };
+    const appOut = lost ? { week: +lost[0], team: lost[1].team } : null;
+    const out = row?.out && (!appOut || row.out.week < appOut.week) ? row.out : appOut;
+    return { id: i, name: name || (i ? `Entry ${i + 1}` : 'Me'), used: [...used], alive, out, onSheet: !!row, picks: app };
   });
 }
 
@@ -163,9 +165,10 @@ async function gradePicks() {
       for (const picks of Object.values(m.entryPicks?.[season] || {})) for (const [w, p] of Object.entries(picks)) {
         if (p.result) continue;
         const g = (byWeek.get(+w) || []).find((x) => x.home === p.team || x.away === p.team);
-        if (!g || g.status !== 'post') continue;
-        const won = g.home === p.team ? g.homeWinner : g.awayWinner;
-        p.result = g.homeScore === g.awayScore ? 'tie' : won ? 'win' : 'loss';
+        if (!g) continue;
+        const result = model.gameResult(g, p.team);
+        if (result === null) continue;
+        p.result = result;
         p.score = `${g.awayScore}-${g.homeScore}`;
         graded++;
       }

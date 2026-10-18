@@ -71,7 +71,7 @@ function renderPick() {
   if (!editable) rows.sort((a, b) => srank(a) - srank(b)); // when editable, kept-off games stay pickable in value order
   const seen = new Set();
   let html = entryChips(d) + `<div class="card"><div class="deadline"><div><div class="big">${myPick ? `${esc(myPick.team)} ${editable ? 'picked' : 'locked'}` : 'No pick yet'}${entries(d).length > 1 ? ` <small style="color:var(--muted);font-weight:400">· ${esc(me.name)}${me.alive ? '' : ' (eliminated)'}</small>` : ''}</div><div class="sub">${editable ? `Week ${d.week} stays open — you can still change or backfill this pick` : (dl ? `Pick by ${dl.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${cd}` : '')}</div></div>
-    ${myPick ? `<span class="pill ${myPick.result === 'win' ? 'good' : myPick.result === 'loss' ? 'bad' : 'info'}">${myPick.result ? esc(myPick.result.toUpperCase()) + (myPick.score ? ' ' + esc(myPick.score) : '') : 'PENDING'}</span>` : `<span class="pill warn">OPEN</span>`}</div>
+    ${myPick ? `<span class="pill ${myPick.result === 'win' ? 'good' : (myPick.result === 'loss' || myPick.result === 'tie') ? 'bad' : 'info'}">${myPick.result ? esc(myPick.result === 'tie' ? 'TIE · OUT' : myPick.result.toUpperCase()) + (myPick.score ? ' ' + esc(myPick.score) : '') : 'PENDING'}</span>` : `<span class="pill warn">OPEN</span>`}</div>
     ${d.portfolio?.best ? `<div class="note" style="margin-top:8px">Portfolio (joint EV) suggests <b>${esc(d.portfolio.best.teams[state.entry] || '—')}</b> for ${esc(me.name)} this week${d.portfolio.hedge && d.portfolio.hedge !== d.portfolio.best ? ` · hedge row: ${d.portfolio.hedge.teams.map(esc).join(' / ')} (wipeout ${pct(d.portfolio.hedge.wipeout)} vs ${pct(d.portfolio.best.wipeout)})` : ''} · details in the Pool tab</div>` : d.plan?.plan?.length ? `<div class="note" style="margin-top:8px">Season plan suggests <b>${esc(d.plan.plan[0].team || '—')}</b> this week · projected survival to W18 ${pct(d.plan.survival)}</div>` : ''}</div>`;
   if (d.pool) {
     const P = d.pool; const hist = P.history[d.week - 1];
@@ -90,9 +90,9 @@ function renderPick() {
     const t = d.teams[r.team] || {}; const isPick = myPick?.team === r.team;
     const gd = new Date(r.date);
     const flags = r.flags.map((f) => `<span class="pill ${f === 'heavy favorite' || f === 'contrarian edge' ? 'good' : /injur|disadvantage|save|crowd/.test(f) ? 'warn' : /road|division/.test(f) ? '' : 'info'}">${esc(f)}</span>`).join('');
-    const badge = r.status === 'post' ? `<span class="pill ${r.won ? 'good' : 'bad'}">${r.won ? 'WON' : 'LOST'}${r.score ? ' ' + esc(r.score) : ''}</span>`
-      : r.status === 'in' ? `<span class="pill info">LIVE${r.score ? ' ' + esc(r.score) : ''}${r.statusDetail ? ' · ' + esc(r.statusDetail) : ''}</span>` : '';
-    const hl = r.status === 'post' ? (r.won ? 'won' : 'lost') : r.status === 'in' ? 'live' : '';
+    const badge = r.done ? `<span class="pill ${r.won ? 'good' : 'bad'}">${r.tie ? 'TIE · OUT' : r.won ? 'WON' : 'LOST'}${r.score ? ' ' + esc(r.score) : ''}</span>`
+      : r.status === 'post' ? '<span class="pill info">RESULT PENDING</span>' : r.status === 'in' ? `<span class="pill info">LIVE${r.score ? ' ' + esc(r.score) : ''}${r.statusDetail ? ' · ' + esc(r.statusDetail) : ''}</span>` : '';
+    const hl = r.done ? (r.won ? 'won' : 'lost') : r.status === 'in' ? 'live' : '';
     html += `<div class="row ${r.used ? 'used' : ''} ${hl}" data-k="${esc(r.espn + r.team)}">
       <img src="${esc(t.logo || '')}" alt="" loading="lazy">
       <div class="body"><div class="title">${esc(r.team)} <small>${r.neutral ? 'vs' : r.home ? 'vs' : '@'} ${esc(r.opp)} · ${gd.toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}</small></div>
@@ -270,10 +270,10 @@ function bindSg() {
 function seasonSections(d) {
   const picks = picksOf(d, state.entry); const me = entries(d)[state.entry]; const path = d.paths?.paths?.find((p) => p.id === me.id); const plan = path?.plan || d.plan?.plan || [];
   let html = `<div class="card"><h2>My picks${entries(d).length > 1 ? ` · ${esc(me.name)}` : ''}</h2><div class="grid">`;
-  for (let w = 1; w <= 18; w++) { const p = picks[w]; const cls = p ? (p.result === 'win' ? 'win' : p.result === 'loss' ? 'loss' : 'pending') : ''; html += `<div class="cell ${cls}" data-w="${w}">W${w}<b>${p ? esc(p.team) : '·'}</b>${p?.score ? `<span class="note">${esc(p.score)}</span>` : ''}</div>`; }
-  const wins = Object.values(picks).filter((p) => p.result === 'win').length, losses = Object.values(picks).filter((p) => p.result === 'loss').length;
+  for (let w = 1; w <= 18; w++) { const p = picks[w]; const cls = p ? (p.result === 'win' ? 'win' : (p.result === 'loss' || p.result === 'tie') ? 'loss' : 'pending') : ''; html += `<div class="cell ${cls}" data-w="${w}">W${w}<b>${p ? esc(p.team) : '·'}</b>${p?.score ? `<span class="note">${esc(p.score)}</span>` : ''}</div>`; }
+  const wins = Object.values(picks).filter((p) => p.result === 'win').length, losses = Object.values(picks).filter((p) => p.result === 'loss' || p.result === 'tie').length;
   const burned = [...new Set([...(me.used || []), ...Object.values(picks).map((p) => p.team)])];
-  html += `</div><div class="note" style="margin-top:8px">${wins} survived · ${losses} lost · ${Object.keys(picks).length} picked · teams used: ${burned.map(esc).join(', ') || 'none'}${me.onSheet ? ' (includes the workbook row)' : ''}</div></div>`;
+  html += `</div><div class="note" style="margin-top:8px">${wins} survived · ${losses} out (loss/tie) · ${Object.keys(picks).length} picked · teams used: ${burned.map(esc).join(', ') || 'none'}${me.onSheet ? ' (includes the workbook row)' : ''}</div></div>`;
   const collide = d.paths?.collisions?.length ? `<br><span style="color:var(--warn)">Collision weeks (2+ of my entries want the same team unconstrained): ${d.paths.collisions.map((c) => `W${c.week} ${c.teams.map(esc).join('/')}`).join(', ')}</span> — paths below are de-conflicted so entries do not spend the same team in the same week.` : '';
   html += `<div class="card"><h2>Optimal season plan from week ${d.week}${entries(d).length > 1 ? ` · ${esc(me.name)}` : ''}</h2><div class="note" style="margin-bottom:6px">Maximizes joint survival odds using current lines and Elo. Projected survival through W18: <b>${pct(path?.survival ?? d.plan?.survival)}</b>. Lines shift weekly, so re-check each week.${collide}</div><table><tr><th>Wk</th><th>Team</th><th>Opp</th><th class="n">Win%</th></tr>`;
   for (const p of plan) html += `<tr><td>${p.week}</td><td><b>${esc(p.team || '—')}</b></td><td>${p.team ? (p.home ? 'vs ' : '@ ') + esc(p.opp) : ''}</td><td class="n">${pct(p.prob)}</td></tr>`;

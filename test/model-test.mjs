@@ -234,7 +234,7 @@ test('poolAnalysis: shares sum to ~1 over alive entries, leverage is bounded, co
 /* ---------- Pool grading / elimination rules (from main) ---------- */
 // These exercise the pool-grading logic in isolation with hand-built projections, so they document the
 // exact elimination rules the user signed off on (recorded loss = out now; blank = out only once the week is
-// final; ties survive; a week nobody recorded predates the sheet and is unknown).
+// final; ties eliminate; a week nobody recorded predates the sheet and is unknown).
 
 // A partial Week 1: LAR lost and SEA won (both final), but DAL/NYG has not been played, so the week is not
 // complete. Mirrors the live fixture the day the Wed/Thurs picks went in.
@@ -350,13 +350,14 @@ test('a prior-week loss keeps an entry out in later weeks', () => {
   assert.deepEqual(e.out, { week: 1, team: 'LAR' }, 'the first loss is what sticks');
 });
 
-test('a tie survives (a tie is not a loss)', () => {
+test('a final tie eliminates under the organizer must-win rule', () => {
   const proj = {
     ATL: [{ week: 1, opp: 'PHI', home: true, prob: 0.5, done: true, won: false, tie: true }],
     PHI: [{ week: 1, opp: 'ATL', home: false, prob: 0.5, done: true, won: false, tie: true }],
   };
   const [e] = aliveEntries([{ name: 'tie backer', picks: { 1: 'ATL' } }], proj, 1);
-  assert.equal(e.alive, true, 'won===false but tie===true -> not eliminated');
+  assert.equal(e.alive, false);
+  assert.deepEqual(e.out, { week: 1, team: 'ATL' });
 });
 
 test('poolAnalysis reconciles alive + eliminated === total and ships an entries array', () => {
@@ -413,11 +414,11 @@ test('aliveEntries: a repeat precedes a later loss', () => {
   assert.deepEqual(e.out, { week: 5, team: 'JAX' });
 });
 
-test('aliveEntries: a surviving tie still burns the team for subsequent weeks', () => {
+test('aliveEntries: an earlier tie keeps precedence over a later repeated team', () => {
   const projection = { JAX: [{ week: 1, done: true, won: false, tie: true }, { week: 5, done: true, won: true }] };
   const entries = [{ picks: { 1: 'JAX', 5: 'JAX' } }];
-  assert.equal(aliveEntries(entries, projection, 1)[0].alive, true);
-  assert.deepEqual(aliveEntries(entries, projection, 5)[0].out, { week: 5, team: 'JAX' });
+  assert.equal(aliveEntries(entries, projection, 1)[0].alive, false);
+  assert.deepEqual(aliveEntries(entries, projection, 5)[0].out, { week: 1, team: 'JAX' });
 });
 
 test('aliveEntries: pending repeats eliminate, while unique pending picks and partial blanks survive', () => {
@@ -463,4 +464,49 @@ test('poolAnalysis: repeat eliminations reach pool counts and entry payloads', (
   assert.equal(result.alive, 1);
   assert.equal(result.eliminated, 1);
   assert.deepEqual(result.entries[0].out, { week: 5, team: 'JAX' });
+});
+
+
+/* ---------- Must-win tie rule ---------- */
+test('Gurung NYG Week 5 27-27 tie eliminates in imported history, not before Week 5', () => {
+  const projection = projectSeason({ nvGames: [g({ season: 2026, week: 5, home: 'WSH', away: 'NYG', result: 0 })], elo: { ratings: {} }, season: 2026 });
+  const entries = [{ name: '*Gurung, Chadni', picks: { 5: 'NYG' } }];
+  assert.equal(aliveEntries(entries, projection, 4)[0].alive, true);
+  assert.deepEqual(aliveEntries(entries, projection, 5)[0].out, { week: 5, team: 'NYG' });
+});
+
+test('a repeat before a later tie remains the earliest elimination', () => {
+  const projection = { JAX: [{ week: 1, done: true, won: true }, { week: 2, done: false, won: null }],
+    NYG: [{ week: 5, done: true, won: false, tie: true }] };
+  const [e] = aliveEntries([{ picks: { 5: 'NYG', 2: 'JAX', 1: 'JAX' } }], projection, 5);
+  assert.deepEqual(e.out, { week: 2, team: 'JAX' });
+});
+
+test('rateWeek final ties grade both sides out; incomplete scores stay unknown', () => {
+  const rate = (game) => rateWeek({ espnGames: [espnGame(game)], nvGames: [], elo: { ratings: {}, form: {} }, injuries: {}, season: 2026, week: 5, used: [], remainingWeeks: {} });
+  const rows = rate({ status: 'post', homeScore: 27, awayScore: 27 });
+  assert.ok(rows.every((r) => r.won === false && r.tie === true));
+  for (const scores of [{ homeScore: null, awayScore: null }, { homeScore: 0, awayScore: null }, { homeScore: NaN, awayScore: 0 }]) {
+    assert.ok(rate({ status: 'post', ...scores }).every((r) => r.won === null && !r.tie));
+  }
+});
+
+test('applyFinals overlays ties as elimination but never invents a tie from missing scores', () => {
+  for (const scores of [{ homeScore: 27, awayScore: 27 }, { homeScore: null, awayScore: null }, { homeScore: 0, awayScore: null }]) {
+    const projection = { NYG: [{ week: 5, done: false, won: null }], WSH: [{ week: 5, done: false, won: null }] };
+    applyFinals(projection, [{ home: 'WSH', away: 'NYG', status: 'post', homeWinner: false, awayWinner: false, ...scores }], 5);
+    const finalTie = scores.homeScore === 27;
+    assert.equal(projection.NYG[0].done, finalTie);
+    assert.equal(aliveEntries([{ picks: { 5: 'NYG' } }], projection, 5)[0].alive, !finalTie);
+  }
+});
+
+test('null, absent and pending CSV results remain unknown rather than tied', () => {
+  for (const result of [null, undefined]) {
+    const projection = projectSeason({ nvGames: [g({ season: 2026, week: 5, home: 'WSH', away: 'NYG', result })], elo: { ratings: {} }, season: 2026 });
+    assert.equal(projection.NYG[0].done, false);
+    assert.equal(projection.NYG[0].tie, false);
+    assert.equal(projection.NYG[0].won, null);
+    assert.equal(aliveEntries([{ picks: { 5: 'NYG' } }], projection, 5)[0].alive, true);
+  }
 });
